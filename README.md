@@ -1,2 +1,2 @@
 # CommunityPool
-Deploy a pool, fund your community
+Deploy a pool, Fund your community
