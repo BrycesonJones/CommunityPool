@@ -64,6 +64,8 @@ jobs:
 
       - name: Production build
         run: npm run build
+        env:
+          NEXT_PUBLIC_EXPECTED_CHAIN_ID: '11155111'
 
       - name: Supply-chain guard checks
         run: npm run supply-chain:check
