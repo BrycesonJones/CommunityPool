@@ -65,7 +65,13 @@ jobs:
       - name: Production build
         run: npm run build
         env:
+          # CI-only build placeholders — NOT real credentials. The Next.js
+          # production build prerenders pages that import the Supabase client,
+          # whose constructor parses the URL and requires a non-empty anon key.
+          # These values let the build complete; CI never makes live calls.
           NEXT_PUBLIC_EXPECTED_CHAIN_ID: '11155111'
+          NEXT_PUBLIC_SUPABASE_URL: 'https://placeholder.supabase.co'
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjaS1wbGFjZWhvbGRlciIsInJvbGUiOiJhbm9uIn0.ci-placeholder-not-a-real-jwt-signature'
 
       - name: Supply-chain guard checks
         run: npm run supply-chain:check
