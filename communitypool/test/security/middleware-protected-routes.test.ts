@@ -20,7 +20,7 @@ afterEach(() => {
 });
 
 async function run(pathname: string): Promise<Response> {
-  const { updateSession } = await import("@/lib/supabase/middleware");
+  const { updateSession } = await import("@/lib/supabase/session");
   const url = `https://app.example${pathname}`;
   return updateSession(new NextRequest(url));
 }
