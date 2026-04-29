@@ -1,0 +1,12 @@
+[submodule "communitypool/lib/forge-std"]
+	path = communitypool/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
+[submodule "communitypool/lib/chainlink-brownie-contracts"]
+	path = communitypool/lib/chainlink-brownie-contracts
+	url = https://github.com/smartcontractkit/chainlink-brownie-contracts
+[submodule "communitypool/lib/openzeppelin-contracts"]
+	path = communitypool/lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts
+[submodule "communitypool/lib/foundry-devops"]
+	path = communitypool/lib/foundry-devops
+	url = https://github.com/Cyfrin/foundry-devops

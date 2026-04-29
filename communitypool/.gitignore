@@ -1,0 +1,61 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+/forge-out/
+/cache/
+/broadcast/
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+!.env.example
+
+# Local investigation/debug scripts (may contain ad-hoc DB credentials)
+_investigate.mjs
+*_investigate*.mjs
+*debug*.mjs
+
+# Generated SBOM (uploaded as CI artifact, never committed)
+sbom.json
+
+# Supabase Dev → Prod schema-clone staging area (dumps may include constraint/policy
+# names that mirror production; never commit raw pg_dump output).
+/supabase/.prod-clone/
+
+# Supabase CLI local state (project ref, pooler URL, version pins)
+/supabase/.temp/
+/supabase/.branches/
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
