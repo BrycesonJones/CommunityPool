@@ -26,7 +26,20 @@ go.work.sum
 
 # env file
 .env
+.env.*
+!.env.example
 
 # Editor/IDE
 # .idea/
 # .vscode/
+node_modules
+
+# macOS
+.DS_Store
+
+# Local agent / IDE configuration
+.claude/
+.cursor/
+
+# Supabase CLI local state at repo root (real project lives in communitypool/supabase/)
+/supabase/
