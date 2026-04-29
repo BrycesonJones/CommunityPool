@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { Suspense, useEffect, useMemo } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import posthog from "posthog-js";
 import { PostHogProvider as PostHogReactProvider } from "posthog-js/react";
@@ -54,7 +54,9 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <PostHogReactProvider client={posthog}>
-      <PostHogPageviewTracker />
+      <Suspense fallback={null}>
+        <PostHogPageviewTracker />
+      </Suspense>
       {children}
     </PostHogReactProvider>
   );
