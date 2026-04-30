@@ -53,3 +53,22 @@ describe("expected-chain production guard", () => {
     );
   });
 });
+
+// EIP-3326 requires `chainId` in wallet_switchEthereumChain / wallet_addEthereumChain
+// to be an unpadded, non-zero hex string. MetaMask rejects "0x01" with an RPC error,
+// so chain id 1 must serialize as "0x1".
+describe("expectedChainIdHex unpadded format", () => {
+  it("serializes chain id 1 as '0x1' (Mainnet)", async () => {
+    vi.stubEnv("NODE_ENV", "test");
+    vi.stubEnv("NEXT_PUBLIC_EXPECTED_CHAIN_ID", "1");
+    const mod = await import("@/lib/wallet/expected-chain");
+    expect(mod.expectedChainIdHex).toBe("0x1");
+  });
+
+  it("serializes chain id 11155111 as '0xaa36a7' (Sepolia)", async () => {
+    vi.stubEnv("NODE_ENV", "test");
+    vi.stubEnv("NEXT_PUBLIC_EXPECTED_CHAIN_ID", "11155111");
+    const mod = await import("@/lib/wallet/expected-chain");
+    expect(mod.expectedChainIdHex).toBe("0xaa36a7");
+  });
+});
