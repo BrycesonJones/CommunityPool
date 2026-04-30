@@ -1,5 +1,3 @@
-import { toBeHex } from "ethers";
-
 /**
  * Local development / CI default. In production, NEXT_PUBLIC_EXPECTED_CHAIN_ID
  * MUST be set explicitly — see `resolveExpectedChainId`. We never silently
@@ -60,7 +58,7 @@ export const expectedChainId: bigint = resolveExpectedChainId(
   process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID,
 );
 
-export const expectedChainIdHex: string = toBeHex(expectedChainId);
+export const expectedChainIdHex: string = `0x${expectedChainId.toString(16)}`;
 
 /**
  * Reads `NEXT_PUBLIC_EXPECTED_CHAIN_ID` at call time so guards (e.g.
