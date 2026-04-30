@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
+import { Analytics } from "@vercel/analytics/next";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 import { PoolActivityProvider } from "@/components/pool-activity-provider";
 import { PostHogProvider } from "@/components/posthog-provider";
 import { WalletProvider } from "@/components/wallet-provider";
@@ -42,6 +44,8 @@ export default function RootLayout({
             <PoolActivityProvider>{children}</PoolActivityProvider>
           </WalletProvider>
         </PostHogProvider>
+        <Analytics />
+        <SpeedInsights />
       </body>
     </html>
   );
