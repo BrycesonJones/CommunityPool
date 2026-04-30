@@ -580,7 +580,7 @@ export default async function Home() {
                   <li><span className="text-sm text-zinc-400">X</span></li>
                   <li>
                     <a
-                      href="https://www.instagram.com/systemsofsimulacra/"
+                      href="https://www.instagram.com/bryceson.simulacra/"
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-sm text-zinc-400 hover:text-white transition-colors"
