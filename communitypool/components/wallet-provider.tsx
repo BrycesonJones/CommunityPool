@@ -332,6 +332,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
           clearWalletState();
         }
       } catch (e) {
+        console.error("Wallet connect error:", e);
         setErrorMessage(messageForProviderError(e, connector.name));
         clearWalletState();
       } finally {
@@ -354,6 +355,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       if (h) applyHydrated(walletId, h);
       else clearWalletState();
     } catch (e) {
+      console.error("Wallet switch chain error:", e);
       setErrorMessage(
         e instanceof Error
           ? e.message
