@@ -577,7 +577,16 @@ export default async function Home() {
               <div>
                 <h3 className="text-xs font-semibold text-white uppercase tracking-wider mb-4">Social</h3>
                 <ul className="space-y-3">
-                  <li><span className="text-sm text-zinc-400">X</span></li>
+                  <li>
+                    <a
+                      href="https://x.com/brycesonjx"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sm text-zinc-400 hover:text-white transition-colors"
+                    >
+                      X
+                    </a>
+                  </li>
                   <li>
                     <a
                       href="https://www.instagram.com/bryceson.simulacra/"
