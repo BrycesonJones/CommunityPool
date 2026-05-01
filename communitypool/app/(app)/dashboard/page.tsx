@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { SiteHeader } from "@/components/site-header";
+import { UserJotWidget } from "@/components/userjot-widget";
 import AddressBalanceSection from "./address-balance-section";
 import DashboardOpenPools from "./dashboard-open-pools";
 
@@ -36,6 +37,7 @@ export default function DashboardPage() {
         <AddressBalanceSection />
         <DashboardOpenPools />
       </main>
+      <UserJotWidget />
     </div>
   );
 }
