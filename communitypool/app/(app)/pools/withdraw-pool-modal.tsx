@@ -14,7 +14,7 @@ import {
 import communityPoolArtifact from "@/lib/onchain/community-pool-artifact.json";
 import { weiForUsdContribution } from "@/lib/onchain/price-math";
 import {
-  getErc20Presets,
+  getErc20PresetsForPoolChain,
   getPoolChainConfig,
   type Erc20PresetId,
 } from "@/lib/onchain/pool-chain-config";
@@ -51,9 +51,11 @@ type Props = {
    * Prefill the pool context and jump through the ownership check directly
    * to step 3 ("What would you like to withdraw?"). Used by the Open Pools
    * row-level Withdraw action. Verification still runs; we just advance
-   * automatically once it succeeds.
+   * automatically once it succeeds. When `chainId` is provided, the modal
+   * uses it to resolve the ERC20 preset buttons so PAXG / WBTC / XAU₮
+   * render correctly even before the wallet has reported a chain id.
    */
-  initialPool?: { name?: string; address: string };
+  initialPool?: { name?: string; address: string; chainId?: number };
 };
 
 function BackIcon() {
@@ -140,8 +142,8 @@ export default function WithdrawPoolModal({
   const [autoAdvanceAfterVerify, setAutoAdvanceAfterVerify] = useState(false);
 
   const erc20Presets = useMemo(
-    () => (chainId !== null ? getErc20Presets(chainId) : []),
-    [chainId],
+    () => getErc20PresetsForPoolChain(initialPool?.chainId, chainId),
+    [initialPool?.chainId, chainId],
   );
 
   useEffect(() => {

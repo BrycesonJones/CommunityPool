@@ -8,7 +8,11 @@ import {
   fundPoolErc20Human,
   getPoolWhitelistedTokenAddresses,
 } from "@/lib/onchain/community-pool";
-import { getErc20Presets, getPoolChainConfig, type Erc20PresetId } from "@/lib/onchain/pool-chain-config";
+import {
+  getErc20PresetsForPoolChain,
+  getPoolChainConfig,
+  type Erc20PresetId,
+} from "@/lib/onchain/pool-chain-config";
 import {
   erc20UsdToHumanAmountString,
   fundErc20FeeInefficiencyMessage,
@@ -36,9 +40,12 @@ type Props = {
   onFunded?: (summary: FundedPoolSummary) => void;
   /**
    * Prefill the pool context and jump directly to step 2 ("How much would you
-   * like to fund?"). Used by the Open Pools row-level Fund action.
+   * like to fund?"). Used by the Open Pools row-level Fund action. When
+   * `chainId` is provided, the modal uses it to resolve the ERC20 preset
+   * buttons so PAXG / WBTC / XAU₮ render correctly even if the wallet
+   * isn't connected yet (the pool's deploy chain is the source of truth).
    */
-  initialPool?: { name?: string; address: string };
+  initialPool?: { name?: string; address: string; chainId?: number };
 };
 
 function BackIcon() {
@@ -85,8 +92,8 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
   const [feeWarning, setFeeWarning] = useState<string | null>(null);
 
   const erc20Presets = useMemo(
-    () => (chainId !== null ? getErc20Presets(chainId) : []),
-    [chainId],
+    () => getErc20PresetsForPoolChain(initialPool?.chainId, chainId),
+    [initialPool?.chainId, chainId],
   );
 
   useEffect(() => {

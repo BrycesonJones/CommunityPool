@@ -3,6 +3,7 @@ import {
   getPoolChainConfig,
   getDefaultErc20TokenConfigs,
   getErc20Presets,
+  getErc20PresetsForPoolChain,
 } from "@/lib/onchain/pool-chain-config";
 
 const SEPOLIA_ENV_KEYS = [
@@ -81,5 +82,51 @@ describe("getPoolChainConfig — Sepolia (no mainnet fallback)", () => {
     // Other tokens stay opted-out — no mainnet fallback.
     expect(cfg.wrappedBtc).toBeNull();
     expect(cfg.tetherGold).toBeNull();
+  });
+});
+
+/**
+ * Regression: a 2026-05-07 user report showed the Fund modal rendering only
+ * an "ETH" button when the wallet's chain id wasn't yet resolved at modal
+ * mount, so PAXG / WBTC / XAU₮ were unreachable for funding orphaned
+ * mainnet pools. The Fund / Withdraw modals now resolve presets via
+ * getErc20PresetsForPoolChain, which prefers the pool's deploy chain
+ * (passed via initialPool.chainId from the row) over the wallet chain.
+ */
+describe("getErc20PresetsForPoolChain — Fund/Withdraw modal preset resolution", () => {
+  it("returns the three mainnet presets when the pool was deployed on chain 1, even with a null wallet chain", () => {
+    const presets = getErc20PresetsForPoolChain(1, null);
+    expect(presets).toHaveLength(3);
+    const symbols = presets.map((p) => p.symbol);
+    expect(symbols).toContain("WBTC");
+    expect(symbols).toContain("PAXG");
+    expect(symbols).toContain("XAU₮");
+  });
+
+  it("accepts a bigint pool chain id (matches the wallet provider's bigint shape)", () => {
+    const presets = getErc20PresetsForPoolChain(BigInt(1), null);
+    expect(presets.map((p) => p.symbol)).toContain("PAXG");
+  });
+
+  it("falls back to the wallet chain when no pool chain is provided", () => {
+    const presets = getErc20PresetsForPoolChain(null, BigInt(1));
+    expect(presets).toHaveLength(3);
+  });
+
+  it("falls back to the build's expected chain when both pool and wallet chain are null", () => {
+    const saved = process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID;
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "1";
+    try {
+      const presets = getErc20PresetsForPoolChain(null, null);
+      expect(presets).toHaveLength(3);
+      expect(presets.map((p) => p.symbol)).toContain("PAXG");
+    } finally {
+      if (saved == null) delete process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID;
+      else process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = saved;
+    }
+  });
+
+  it("returns [] gracefully when given an unsupported chain id rather than throwing into a render", () => {
+    expect(getErc20PresetsForPoolChain(137, null)).toEqual([]);
   });
 });

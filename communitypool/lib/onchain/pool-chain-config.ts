@@ -6,6 +6,8 @@
  * plus native ETH funding via the ETH/USD feed.
  */
 
+import { getExpectedChainId } from "@/lib/wallet/expected-chain";
+
 export type TokenConfigArg = {
   token: string;
   usdFeed: string;
@@ -156,6 +158,37 @@ export function getErc20PresetsForDeployModal(chainId: bigint | null): Erc20Pres
     return getErc20Presets(BigInt(1));
   }
   return getErc20Presets(chainId);
+}
+
+/**
+ * ERC20 rows for the Fund / Withdraw modals. Pool chain wins when known
+ * (Fund/Withdraw is always tied to a specific deployed pool whose chain
+ * is fixed at deploy time). Wallet chain is the next-best signal. Falls
+ * back to the build's expected chain so the buttons are populated even
+ * before MetaMask reports a chain id. Returns [] only if every source
+ * is unresolvable.
+ */
+export function getErc20PresetsForPoolChain(
+  poolChainId: number | bigint | null | undefined,
+  walletChainId: bigint | null,
+): Erc20Preset[] {
+  let target: bigint | null = null;
+  if (poolChainId !== null && poolChainId !== undefined) {
+    target = typeof poolChainId === "bigint" ? poolChainId : BigInt(poolChainId);
+  } else if (walletChainId !== null) {
+    target = walletChainId;
+  } else {
+    try {
+      target = getExpectedChainId();
+    } catch {
+      return [];
+    }
+  }
+  try {
+    return getErc20Presets(target);
+  } catch {
+    return [];
+  }
 }
 
 /** @deprecated Use describePlatformAcceptedAssetsForDeploy */

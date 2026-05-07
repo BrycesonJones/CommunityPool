@@ -91,7 +91,9 @@ describe("DeployPoolModal partial failure recovery", () => {
     fireEvent.click(screen.getByRole("button", { name: /Deploy/i }));
 
     await waitFor(() =>
-      expect(screen.getByText(/Pool created, but funding failed/i)).toBeInTheDocument(),
+      expect(
+        screen.getByText(/Pool deployed, but token funding failed/i),
+      ).toBeInTheDocument(),
     );
     expect(onDeployed).toHaveBeenCalled();
     const statuses = onDeployed.mock.calls.map(

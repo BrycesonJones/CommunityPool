@@ -524,7 +524,11 @@ export default function PoolsContent() {
         onFunded={handlePoolFunded}
         initialPool={
           rowActionPool
-            ? { name: rowActionPool.name, address: rowActionPool.address }
+            ? {
+                name: rowActionPool.name,
+                address: rowActionPool.address,
+                chainId: rowActionPool.chainId,
+              }
             : undefined
         }
       />
@@ -534,7 +538,11 @@ export default function PoolsContent() {
         onWithdrawn={handlePoolWithdrawn}
         initialPool={
           rowActionPool
-            ? { name: rowActionPool.name, address: rowActionPool.address }
+            ? {
+                name: rowActionPool.name,
+                address: rowActionPool.address,
+                chainId: rowActionPool.chainId,
+              }
             : undefined
         }
       />

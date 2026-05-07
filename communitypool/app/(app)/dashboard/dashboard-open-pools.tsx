@@ -180,7 +180,11 @@ export default function DashboardOpenPools() {
         onFunded={handlePoolFunded}
         initialPool={
           rowActionPool
-            ? { name: rowActionPool.name, address: rowActionPool.address }
+            ? {
+                name: rowActionPool.name,
+                address: rowActionPool.address,
+                chainId: rowActionPool.chainId,
+              }
             : undefined
         }
       />
@@ -190,7 +194,11 @@ export default function DashboardOpenPools() {
         onWithdrawn={handlePoolWithdrawn}
         initialPool={
           rowActionPool
-            ? { name: rowActionPool.name, address: rowActionPool.address }
+            ? {
+                name: rowActionPool.name,
+                address: rowActionPool.address,
+                chainId: rowActionPool.chainId,
+              }
             : undefined
         }
       />
