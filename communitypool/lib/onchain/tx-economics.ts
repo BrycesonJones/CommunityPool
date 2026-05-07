@@ -63,7 +63,15 @@ export function validateFundEthUsdHuman(human: string): string | undefined {
   return undefined;
 }
 
-/** Convert a USD notion (human, e.g. "100.50") to token human units using the preset’s Chainlink feed. */
+/**
+ * Convert a USD notion (human, e.g. "100.50") to token human units using the
+ * preset's Chainlink feed. Adds one atomic unit of buffer so the on-chain
+ * back-conversion (`tokenAmount * priceUsd / 10^decimals`, also a floor)
+ * lands at or above the requested USD value, matching the `+ 1` buffer in
+ * `weiForUsdContribution` for the ETH path. Without this, exact-equal
+ * boundary cases (e.g. funding $25 to a pool whose minimumUsd is $25)
+ * revert with `CommunityPool__BelowMinimumUsd` because both sides truncate.
+ */
 export async function erc20UsdToHumanAmountString(
   signer: JsonRpcSigner,
   preset: Pick<Erc20Preset, "usdFeed" | "decimals">,
@@ -78,7 +86,8 @@ export async function erc20UsdToHumanAmountString(
     if (ans <= BigInt(0)) return null;
     const priceUsd18 = ans * BigInt(10) ** BigInt(10);
     const usd18 = parseUnits(raw, 18);
-    const tokenRaw = (usd18 * BigInt(10) ** BigInt(preset.decimals)) / priceUsd18;
+    const tokenRaw =
+      (usd18 * BigInt(10) ** BigInt(preset.decimals)) / priceUsd18 + BigInt(1);
     if (tokenRaw <= BigInt(0)) return null;
     return formatUnits(tokenRaw, preset.decimals);
   } catch {
