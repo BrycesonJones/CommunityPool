@@ -60,6 +60,29 @@ describe("community-pool helpers: ERC20 ABI surface", () => {
     expect(src).toMatch(/function\s+decimals\s*\(/);
     expect(src).toMatch(/function\s+balanceOf\s*\(/);
   });
+
+  /**
+   * Regression: a follow-up to the 2026-05-07 incident — we switched the
+   * fund helper to approve MaxUint256 (ethers' built-in for 2^256 - 1)
+   * so users only sign one approve per (pool, token) lifetime instead
+   * of one per fund amount. If a future edit reverts this back to
+   * `amount`, every subsequent fund becomes 2 TXs again.
+   */
+  it("fundPoolErc20 approves MaxUint256 (infinite) so subsequent funds skip approve", async () => {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const src = await fs.readFile(
+      path.resolve(process.cwd(), "lib/onchain/community-pool.ts"),
+      "utf8",
+    );
+    // The approve call inside fundPoolErc20 must use MaxUint256, not the
+    // exact `amount` parameter.
+    expect(src).toMatch(/erc20\.approve\(\s*poolAddr\s*,\s*MaxUint256\s*\)/);
+    // And MaxUint256 must be imported from ethers (cheap sanity check
+    // that catches a stray local-symbol shadow if anyone defines one).
+    expect(src).toMatch(/from\s+["']ethers["']/);
+    expect(src).toMatch(/\bMaxUint256\b/);
+  });
 });
 
 /**

@@ -6,6 +6,7 @@ import {
   ContractTransactionResponse,
   JsonRpcProvider,
   JsonRpcSigner,
+  MaxUint256,
   parseUnits,
   getAddress,
   isAddress,
@@ -191,8 +192,13 @@ export async function fundPoolErc20(
   const erc20 = new Contract(token, ERC20_ABI, signer);
   const pool = new Contract(poolAddr, artifact.abi, signer);
   const cur = await erc20.allowance(await signer.getAddress(), poolAddr);
+  // Approve MaxUint256 instead of the exact amount so subsequent funds of
+  // the same (user, pool, token) never trigger another approve TX. This
+  // pool's only `transferFrom` call is in fundERC20(token, amount), which
+  // pulls from msg.sender — the deployer/co-owners cannot drain a funder's
+  // wallet via this allowance.
   if (cur < amount) {
-    const approveTx = await erc20.approve(poolAddr, amount);
+    const approveTx = await erc20.approve(poolAddr, MaxUint256);
     await approveTx.wait();
   }
   return pool.fundERC20(token, amount) as Promise<ContractTransactionResponse>;

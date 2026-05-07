@@ -526,6 +526,15 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
                   </div>
                 )}
               </dl>
+              {fundKind === "erc20" && (
+                <p className="mt-4 text-xs text-zinc-400" role="status">
+                  ERC20 funding requires a one-time approval transaction the first time you
+                  fund this pool with {assetSummary()}. Subsequent funds of the same pool will
+                  be a single transaction. MetaMask will show the spending cap as Unlimited
+                  for that approval — only this pool can pull from your allowance, and only
+                  when you initiate a fund.
+                </p>
+              )}
               {fundError && (
                 <p className="mt-4 text-sm text-amber-400" role="alert">
                   {fundError}
