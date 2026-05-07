@@ -7,6 +7,7 @@
 [submodule "communitypool/lib/openzeppelin-contracts"]
 	path = communitypool/lib/openzeppelin-contracts
 	url = https://github.com/OpenZeppelin/openzeppelin-contracts
+	ignore = untracked
 [submodule "communitypool/lib/foundry-devops"]
 	path = communitypool/lib/foundry-devops
 	url = https://github.com/Cyfrin/foundry-devops
