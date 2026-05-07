@@ -867,10 +867,29 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
                       <dd className="text-white">{expirationDate || "—"}</dd>
                     </div>
                   </dl>
+                  {chainId === BigInt(1) && !deployedAddress && (
+                    <div
+                      className="mt-4 rounded-lg border border-amber-700/50 bg-amber-950/30 p-3 text-xs text-amber-200"
+                      role="status"
+                    >
+                      Deploying a pool on Ethereum mainnet will spend ETH gas even if the later funding
+                      step fails. Gas fees are paid to the network and cannot be refunded.
+                    </div>
+                  )}
                   {deployedAddress && deployError && (
                     <div className="mt-4 rounded-lg border border-amber-700/50 bg-amber-950/30 p-3 text-sm">
-                      <p className="text-amber-200 font-medium">Pool created, but funding failed</p>
-                      <p className="text-zinc-400 font-mono text-xs break-all mt-1">{deployedAddress}</p>
+                      <p className="text-amber-200 font-medium">Pool deployed, but token funding failed</p>
+                      <p className="text-zinc-300 text-xs mt-1">
+                        Your pool exists on-chain, but the selected token was not deposited. ETH may still
+                        have been spent on gas for the deploy transaction.
+                      </p>
+                      {initialFundKind === "erc20" && (
+                        <p className="text-zinc-300 text-xs mt-1">
+                          No {erc20Presets.find((p) => p.id === initialErc20Selection)?.symbol ?? "tokens"}{" "}
+                          left your wallet unless the approval and funding transactions both succeeded.
+                        </p>
+                      )}
+                      <p className="text-zinc-400 font-mono text-xs break-all mt-2">{deployedAddress}</p>
                       {deployTxHash && (
                         <p className="text-zinc-500 text-xs mt-1">Deploy tx: {deployTxHash}</p>
                       )}
