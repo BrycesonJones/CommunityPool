@@ -2,10 +2,7 @@
 pragma solidity ^0.8.18;
 
 import {Test} from "forge-std/Test.sol";
-import {
-    CommunityPool,
-    CommunityPool__TokenNotWhitelisted
-} from "../src/CommunityPool.sol";
+import {CommunityPool, CommunityPool__TokenNotWhitelisted} from "../src/CommunityPool.sol";
 import {MockV3Aggregator} from "./pricefeeds/V3Aggregator.sol";
 import {MockMintableERC20} from "./MockMintableERC20.sol";
 import {MockFeeOnTransferERC20} from "./MockFeeOnTransferERC20.sol";

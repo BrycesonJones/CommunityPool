@@ -30,9 +30,7 @@ contract DeployCommunityPool is Script {
         CommunityPool.TokenConfig[] memory tokenConfigs = _defaultTokenConfigs();
 
         vm.startBroadcast();
-        CommunityPool pool = new CommunityPool(
-            name, description, minUsd, coOwners, expiresAt, ethUsdFeed, tokenConfigs
-        );
+        CommunityPool pool = new CommunityPool(name, description, minUsd, coOwners, expiresAt, ethUsdFeed, tokenConfigs);
         vm.stopBroadcast();
         console.log("CommunityPool deployed at:", address(pool));
         return pool;
@@ -41,15 +39,9 @@ contract DeployCommunityPool is Script {
     function _defaultTokenConfigs() internal view returns (CommunityPool.TokenConfig[] memory) {
         if (block.chainid == 1) {
             CommunityPool.TokenConfig[] memory c = new CommunityPool.TokenConfig[](3);
-            c[0] = CommunityPool.TokenConfig({
-                token: MAINNET_WBTC, usdFeed: MAINNET_WBTC_USD_FEED, decimals: 8
-            });
-            c[1] = CommunityPool.TokenConfig({
-                token: MAINNET_PAXG, usdFeed: MAINNET_PAXG_USD_FEED, decimals: 18
-            });
-            c[2] = CommunityPool.TokenConfig({
-                token: MAINNET_XAUT, usdFeed: MAINNET_XAU_USD_FEED, decimals: 6
-            });
+            c[0] = CommunityPool.TokenConfig({token: MAINNET_WBTC, usdFeed: MAINNET_WBTC_USD_FEED, decimals: 8});
+            c[1] = CommunityPool.TokenConfig({token: MAINNET_PAXG, usdFeed: MAINNET_PAXG_USD_FEED, decimals: 18});
+            c[2] = CommunityPool.TokenConfig({token: MAINNET_XAUT, usdFeed: MAINNET_XAU_USD_FEED, decimals: 6});
             return c;
         }
         if (block.chainid == 11155111) {

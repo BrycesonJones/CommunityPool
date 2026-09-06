@@ -15,9 +15,7 @@ contract InteractionsTest is Test {
         address[] memory cos;
         CommunityPool.TokenConfig[] memory tks;
         vm.startPrank(owner);
-        pool = new CommunityPool(
-            "T", "", 5e18, cos, uint64(block.timestamp + 365 days), address(feed), tks
-        );
+        pool = new CommunityPool("T", "", 5e18, cos, uint64(block.timestamp + 365 days), address(feed), tks);
         vm.stopPrank();
     }
 

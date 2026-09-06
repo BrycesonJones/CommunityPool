@@ -6,10 +6,7 @@ import {PriceConverter} from "./PriceConverter.sol";
 
 /// @notice Thin wrapper so tests can call `PriceConverter` internal helpers.
 contract PriceConverterHarness {
-    function conversionRate(
-        uint256 ethAmount,
-        AggregatorV3Interface priceFeed
-    ) external view returns (uint256) {
+    function conversionRate(uint256 ethAmount, AggregatorV3Interface priceFeed) external view returns (uint256) {
         return PriceConverter.getConversionRate(ethAmount, priceFeed);
     }
 }

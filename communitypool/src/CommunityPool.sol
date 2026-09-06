@@ -104,8 +104,7 @@ contract CommunityPool {
             if (address(s_tokenInfo[cfg.token].feed) != address(0)) {
                 revert CommunityPool__DuplicateToken();
             }
-            s_tokenInfo[cfg.token] =
-                TokenInfo({feed: AggregatorV3Interface(cfg.usdFeed), decimals: cfg.decimals});
+            s_tokenInfo[cfg.token] = TokenInfo({feed: AggregatorV3Interface(cfg.usdFeed), decimals: cfg.decimals});
             s_whitelistedTokens.push(cfg.token);
             tokenAddrs[j] = cfg.token;
             unchecked {
@@ -113,9 +112,7 @@ contract CommunityPool {
             }
         }
 
-        emit PoolCreated(
-            msg.sender, name_, description_, minimumUsd_, expiresAt_, coOwners, tokenAddrs
-        );
+        emit PoolCreated(msg.sender, name_, description_, minimumUsd_, expiresAt_, coOwners, tokenAddrs);
     }
 
     modifier onlyOwner() {
@@ -187,11 +184,7 @@ contract CommunityPool {
     }
 
     /// @notice Partial ERC20 owner withdraw before expiry.
-    function withdrawTokenAmount(IERC20 token, uint256 amount)
-        external
-        onlyOwner
-        onlyBeforeExpiryOwnerWithdraw
-    {
+    function withdrawTokenAmount(IERC20 token, uint256 amount) external onlyOwner onlyBeforeExpiryOwnerWithdraw {
         if (address(s_tokenInfo[address(token)].feed) == address(0)) {
             revert CommunityPool__TokenNotWhitelisted();
         }
