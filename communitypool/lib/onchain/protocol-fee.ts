@@ -161,8 +161,11 @@ export type FundingPreview =
   | { kind: "no-fee"; version: "v1" }
   /** V2 pool with the live rate read successfully. `feeAmount` may be 0 (0 bps, or rounding). */
   | { kind: "split"; version: "v2"; symbol: string; decimals: number; split: FundingSplit }
-  /** The chain read failed. Show the reason; never substitute a default rate. */
-  | { kind: "unavailable"; message: string };
+  /**
+   * A read failed. `problem` names which one, so a price-feed outage is never reported as a
+   * protocol-fee outage. Never substitute a default rate.
+   */
+  | { kind: "unavailable"; message: string; problem?: PreviewProblemKind };
 
 /**
  * Fee preview for one prospective contribution.
@@ -187,11 +190,23 @@ export async function buildFundingPreview(args: {
     return { kind: "unavailable", message: readErrorMessage(e) };
   }
   if (version === "v1") return { kind: "no-fee", version };
+  let feeBps: bigint;
   try {
-    const { feeBps } = await readLiveProtocolFee(provider, poolAddress);
-    return { kind: "split", version, symbol, decimals, split: previewFundingSplit(grossAmount, feeBps) };
+    ({ feeBps } = await readLiveProtocolFee(provider, poolAddress));
   } catch (e) {
-    return { kind: "unavailable", message: readErrorMessage(e) };
+    const raw = e instanceof Error ? e.message : "";
+    return raw.includes("3%")
+      ? { kind: "unavailable", message: raw, problem: "fee" }
+      : { kind: "unavailable", message: describePreviewProblem("fee").message, problem: "fee" };
+  }
+  try {
+    return { kind: "split", version, symbol, decimals, split: previewFundingSplit(grossAmount, feeBps) };
+  } catch {
+    return {
+      kind: "unavailable",
+      message: describePreviewProblem("calculation").message,
+      problem: "calculation",
+    };
   }
 }
 
@@ -201,3 +216,53 @@ function readErrorMessage(e: unknown): string {
     ? raw
     : "Could not read this pool's current protocol fee from the network.";
 }
+
+/**
+ * Why a contribution preview could not be produced.
+ *
+ * Kept distinct because the three causes are operationally different: the fee comes from
+ * ProtocolConfig, the price from that asset's Chainlink feed, and the split from local
+ * arithmetic. Collapsing them into one message sends people to debug the wrong contract — the
+ * Phase 2.8 smoke test hit exactly that, where a price-read failure was reported as
+ * "could not read the current protocol fee".
+ */
+export type PreviewProblemKind = "fee" | "price" | "calculation";
+
+export type PreviewProblem = {
+  kind: PreviewProblemKind;
+  /** User-facing sentence. Never contains RPC internals. */
+  message: string;
+};
+
+/** User-facing copy for a preview failure. `assetLabel` names the asset whose price failed. */
+export function describePreviewProblem(
+  kind: PreviewProblemKind,
+  assetLabel?: string,
+): PreviewProblem {
+  switch (kind) {
+    case "fee":
+      return {
+        kind,
+        message:
+          "Could not read the current protocol fee. This is blocked until the fee can be confirmed.",
+      };
+    case "price":
+      return {
+        kind,
+        message: assetLabel
+          ? `Could not read the current ${assetLabel} price needed to calculate the contribution. This is blocked until it can be confirmed.`
+          : "Could not read the current price needed to calculate the contribution. This is blocked until it can be confirmed.",
+      };
+    case "calculation":
+      return {
+        kind,
+        message: "Could not calculate the initial contribution. Please retry.",
+      };
+  }
+}
+
+/** Label for the price feed behind an asset, for use in `describePreviewProblem`. */
+export function priceLabelForAsset(symbol: string): string {
+  return symbol === "ETH" ? "ETH/USD" : `${symbol}/USD`;
+}
+

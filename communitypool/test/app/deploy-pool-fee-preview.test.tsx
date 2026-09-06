@@ -23,12 +23,14 @@ const {
   readChainProtocolFeeBpsMock,
   weiForUsdMock,
   erc20UsdToHumanMock,
+  erc20UsdToTokenMock,
 } = vi.hoisted(() => ({
   deployCommunityPoolMock: vi.fn(),
   fundPoolEthMock: vi.fn(),
   readChainProtocolFeeBpsMock: vi.fn(),
   weiForUsdMock: vi.fn(),
   erc20UsdToHumanMock: vi.fn(),
+  erc20UsdToTokenMock: vi.fn(),
 }));
 
 vi.mock("@/lib/onchain/community-pool", async () => {
@@ -59,6 +61,7 @@ vi.mock("@/lib/onchain/tx-economics", async () => {
   return {
     ...actual,
     erc20UsdToHumanAmountString: erc20UsdToHumanMock,
+    erc20UsdToTokenAmount: erc20UsdToTokenMock,
     deployFlowEthFundFeeInefficiencyMessage: async () => null,
     fundErc20FeeInefficiencyMessage: async () => null,
   };
@@ -118,6 +121,7 @@ describe("deploy modal initial-contribution economics", () => {
     readChainProtocolFeeBpsMock.mockResolvedValue(100n);
     weiForUsdMock.mockResolvedValue(1_000000000000000000n);
     erc20UsdToHumanMock.mockResolvedValue("1.0");
+    erc20UsdToTokenMock.mockResolvedValue(1_000000000000000000n);
     global.fetch = vi.fn(async () =>
       new Response(JSON.stringify({ allowed: true, deployedPoolCount: 0 }), {
         status: 200,
@@ -223,6 +227,7 @@ describe("deploy-time protocol-fee re-read gates", () => {
     readChainProtocolFeeBpsMock.mockResolvedValue(100n);
     weiForUsdMock.mockResolvedValue(1_000000000000000000n);
     erc20UsdToHumanMock.mockResolvedValue("1.0");
+    erc20UsdToTokenMock.mockResolvedValue(1_000000000000000000n);
     deployCommunityPoolMock.mockResolvedValue(deployed);
     fundPoolEthMock.mockResolvedValue({ hash: "0x" + "f".repeat(64), wait: async () => ({}) });
     global.fetch = vi.fn(async () =>
@@ -343,5 +348,122 @@ describe("deploy-time protocol-fee re-read gates", () => {
     await waitFor(() => expect(document.body.textContent).toMatch(/initial funding paused/i));
     expect(document.body.textContent).not.toMatch(/pool deployed and funded/i);
     expect(screen.getByRole("button", { name: /^close$/i })).toBeInTheDocument();
+  });
+
+});
+
+/**
+ * Error classification (Phase 2.8 smoke hotfix).
+ *
+ * Production reported "could not read the current protocol fee" when the fee read had actually
+ * succeeded and the ETH/USD price read was what failed. Each cause must now name itself, and each
+ * must still fail closed with Retry.
+ */
+describe("deploy review distinguishes fee, price and calculation failures", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "1";
+    readChainProtocolFeeBpsMock.mockResolvedValue(100n);
+    weiForUsdMock.mockResolvedValue(1_000000000000000000n);
+    erc20UsdToHumanMock.mockResolvedValue("1.0");
+    erc20UsdToTokenMock.mockResolvedValue(1_000000000000000000n);
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ allowed: true, deployedPoolCount: 0 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    cleanup();
+    global.fetch = originalFetch;
+  });
+
+  it("healthy fee + healthy feed produces the split (the smoke-test case)", async () => {
+    // $0.01 of ETH at $2509.88611728 -> 3,984,242,...  wei.
+    weiForUsdMock.mockResolvedValue(3_984_242_408_842n);
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i));
+    expect(deployButton()).toBeEnabled();
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    expect(text).toMatch(/Funding amount/i);
+    expect(text).not.toMatch(/could not read/i);
+  });
+
+  it("blames the fee only when the fee read fails", async () => {
+    readChainProtocolFeeBpsMock.mockResolvedValue(null);
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() =>
+      expect(document.body.textContent).toMatch(/could not read the current protocol fee/i),
+    );
+    expect(document.body.textContent).not.toMatch(/price needed to calculate/i);
+    expect(deployButton()).toBeDisabled();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
+
+  it("names the ETH/USD price when the price read fails, not the fee", async () => {
+    weiForUsdMock.mockRejectedValue(new Error("eth_call failed"));
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() =>
+      expect(document.body.textContent).toMatch(/could not read the current ETH\/USD price/i),
+    );
+    // The precise misattribution that broke the smoke test must not recur.
+    expect(document.body.textContent).not.toMatch(/could not read the current protocol fee/i);
+    expect(deployButton()).toBeDisabled();
+  });
+
+  it("names the ERC20's own feed when its price read fails", async () => {
+    erc20UsdToTokenMock.mockRejectedValue(new Error("eth_call failed"));
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview("PAXG");
+    await waitFor(() =>
+      expect(document.body.textContent).toMatch(/could not read the current PAXG\/USD price/i),
+    );
+    expect(document.body.textContent).not.toMatch(/protocol fee\. /i);
+  });
+
+  it("reports a calculation failure distinctly", async () => {
+    // A rate above the contract cap can only come from a bad read; the split refuses to compute.
+    readChainProtocolFeeBpsMock.mockResolvedValue(301n);
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() => expect(document.body.textContent).toMatch(/could not/i));
+    expect(deployButton()).toBeDisabled();
+  });
+
+  it("Retry recovers from a transient price failure and enables Deploy", async () => {
+    weiForUsdMock.mockRejectedValueOnce(new Error("eth_call failed"));
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() => expect(document.body.textContent).toMatch(/ETH\/USD price/i));
+    expect(deployButton()).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+    await waitFor(() => expect(deployButton()).toBeEnabled());
+    expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i);
+  });
+
+  it("Retry recovers from a transient fee failure and enables Deploy", async () => {
+    readChainProtocolFeeBpsMock.mockResolvedValue(null);
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() =>
+      expect(document.body.textContent).toMatch(/could not read the current protocol fee/i),
+    );
+    expect(deployButton()).toBeDisabled();
+    readChainProtocolFeeBpsMock.mockResolvedValue(100n);
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+    await waitFor(() => expect(deployButton()).toBeEnabled());
+    expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i);
+  });
+
+  it("never hardcodes a rate: a 0 bps chain renders 0%, not 1%", async () => {
+    readChainProtocolFeeBpsMock.mockResolvedValue(0n);
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(0%\)/i));
+    expect(document.body.textContent).not.toMatch(/Protocol fee \(1%\)/i);
   });
 });

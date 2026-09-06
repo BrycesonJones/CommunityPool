@@ -10,7 +10,12 @@ import {
   parseUnits,
   getAddress,
 } from "ethers";
-import { CHAINLINK_AGGREGATOR_V3_ABI, weiForUsdContribution } from "./price-math";
+import {
+  CHAINLINK_AGGREGATOR_V3_ABI,
+  readerFor,
+  weiForUsdContribution,
+  type SignerOrProvider,
+} from "./price-math";
 import type { Erc20Preset } from "./pool-chain-config";
 import artifact from "./community-pool-v1-artifact.json";
 
@@ -72,23 +77,43 @@ export function validateFundEthUsdHuman(human: string): string | undefined {
  * boundary cases (e.g. funding $25 to a pool whose minimumUsd is $25)
  * revert with `CommunityPool__BelowMinimumUsd` because both sides truncate.
  */
+/**
+ * Raw token units for a USD target, using the asset's own Chainlink feed.
+ *
+ * Throws on failure so a caller that must fail closed can tell a price-read problem apart from
+ * every other reason a preview might be unavailable. The read goes through the provider (see
+ * `readerFor`): a view needs no signing context.
+ */
+export async function erc20UsdToTokenAmount(
+  signerOrProvider: SignerOrProvider,
+  preset: Pick<Erc20Preset, "usdFeed" | "decimals">,
+  usdHuman: string,
+): Promise<bigint> {
+  const raw = usdHuman.trim();
+  if (!raw) throw new Error("Missing USD amount.");
+  const feed = new Contract(
+    preset.usdFeed,
+    CHAINLINK_AGGREGATOR_V3_ABI,
+    readerFor(signerOrProvider),
+  );
+  const round = await feed.latestRoundData();
+  const ans = BigInt(round.answer as bigint);
+  if (ans <= BigInt(0)) throw new Error("Price feed returned a non-positive price.");
+  const priceUsd18 = ans * BigInt(10) ** BigInt(10);
+  const usd18 = parseUnits(raw, 18);
+  const tokenRaw = (usd18 * BigInt(10) ** BigInt(preset.decimals)) / priceUsd18 + BigInt(1);
+  if (tokenRaw <= BigInt(0)) throw new Error("USD amount is too small to express in this token.");
+  return tokenRaw;
+}
+
+/** Human-formatted variant that returns null instead of throwing (existing callers rely on this). */
 export async function erc20UsdToHumanAmountString(
-  signer: JsonRpcSigner,
+  signerOrProvider: SignerOrProvider,
   preset: Pick<Erc20Preset, "usdFeed" | "decimals">,
   usdHuman: string,
 ): Promise<string | null> {
   try {
-    const raw = usdHuman.trim();
-    if (!raw) return null;
-    const feed = new Contract(preset.usdFeed, CHAINLINK_AGGREGATOR_V3_ABI, signer);
-    const round = await feed.latestRoundData();
-    const ans = BigInt(round.answer as bigint);
-    if (ans <= BigInt(0)) return null;
-    const priceUsd18 = ans * BigInt(10) ** BigInt(10);
-    const usd18 = parseUnits(raw, 18);
-    const tokenRaw =
-      (usd18 * BigInt(10) ** BigInt(preset.decimals)) / priceUsd18 + BigInt(1);
-    if (tokenRaw <= BigInt(0)) return null;
+    const tokenRaw = await erc20UsdToTokenAmount(signerOrProvider, preset, usdHuman);
     return formatUnits(tokenRaw, preset.decimals);
   } catch {
     return null;
@@ -97,7 +122,7 @@ export async function erc20UsdToHumanAmountString(
 
 async function ethUsdSpot(signer: JsonRpcSigner, ethUsdFeed: string): Promise<number | null> {
   try {
-    const feed = new Contract(ethUsdFeed, CHAINLINK_AGGREGATOR_V3_ABI, signer);
+    const feed = new Contract(ethUsdFeed, CHAINLINK_AGGREGATOR_V3_ABI, readerFor(signer));
     const round = await feed.latestRoundData();
     const ans = Number(round.answer);
     if (!Number.isFinite(ans) || ans <= 0) return null;

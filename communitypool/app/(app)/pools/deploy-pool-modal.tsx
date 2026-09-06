@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useMemo } from "react";
-import { getAddress, isAddress, parseUnits } from "ethers";
+import { getAddress, isAddress } from "ethers";
 import { useWallet } from "@/components/wallet-provider";
 import { formatUnits } from "ethers";
 import { createClient } from "@/lib/supabase/client";
@@ -27,6 +27,7 @@ import {
 import {
   deployFlowEthFundFeeInefficiencyMessage,
   erc20UsdToHumanAmountString,
+  erc20UsdToTokenAmount,
   formatUsdHumanForPoolMinimum,
   fundErc20FeeInefficiencyMessage,
   validateFundEthUsdHuman,
@@ -39,11 +40,14 @@ import {
   validateUsdAmountInputMessage,
 } from "@/lib/onchain/usd-amount-input";
 import {
+  describePreviewProblem,
   formatFeeBpsPercent,
   formatTokenAmount,
   previewFundingSplit,
+  priceLabelForAsset,
   readChainProtocolFeeBps,
   type FundingSplit,
+  type PreviewProblem,
 } from "@/lib/onchain/protocol-fee";
 import { postClientSecurityEvent } from "@/lib/security/client-security-event";
 
@@ -138,6 +142,8 @@ export default function DeployPoolModal({ open, onClose, onDeployed, onRequestFu
     { symbol: string; decimals: number; split: FundingSplit } | null
   >(null);
   const [initialFundSplitLoading, setInitialFundSplitLoading] = useState(false);
+  /** Which read or computation stopped the preview, so the UI names the real cause. */
+  const [initialFundProblem, setInitialFundProblem] = useState<PreviewProblem | null>(null);
   /**
    * Set when the initial contribution was NOT submitted because the protocol fee moved, or could
    * not be confirmed, at one of the two re-read gates. The pool itself is already deployed and is
@@ -231,33 +237,57 @@ export default function DeployPoolModal({ open, onClose, onDeployed, onRequestFu
    */
   const loadInitialFundSplit = useCallback(async (): Promise<void> => {
     setInitialFundSplit(null);
-    if (!signer || chainId === null) return;
+    setInitialFundProblem(null);
+    if (!signer || chainId === null) {
+      setInitialFundProblem(describePreviewProblem("calculation"));
+      return;
+    }
     const canonical = normalizedFundAmount;
-    if (canonical === null) return;
+    if (canonical === null) {
+      setInitialFundProblem(describePreviewProblem("calculation"));
+      return;
+    }
     setInitialFundSplitLoading(true);
     try {
+      // Stage 1 — protocol fee, from ProtocolConfig.
       const bps = await loadProtocolFee();
-      if (bps === null) return;
-      let grossAmount: bigint;
-      let symbol: string;
-      let decimals: number;
-      if (initialFundKind === "eth") {
-        const cfg = getPoolChainConfig(chainId);
-        grossAmount = await weiForUsdContribution(signer, cfg.ethUsdPriceFeed, canonical);
-        symbol = "ETH";
-        decimals = 18;
-      } else {
-        const preset = erc20Presets.find((x) => x.id === initialErc20Selection);
-        if (!preset) return;
-        const human = await erc20UsdToHumanAmountString(signer, preset, canonical);
-        if (human === null) return;
-        grossAmount = parseUnits(human, preset.decimals);
-        symbol = preset.symbol;
-        decimals = preset.decimals;
+      if (bps === null) {
+        setInitialFundProblem(describePreviewProblem("fee"));
+        return;
       }
-      setInitialFundSplit({ symbol, decimals, split: previewFundingSplit(grossAmount, bps) });
+
+      // Stage 2 — the asset's USD price, from its own Chainlink feed. A failure here is a price
+      // problem, not a fee problem: the two live in different contracts.
+      const symbol =
+        initialFundKind === "eth"
+          ? "ETH"
+          : (erc20Presets.find((x) => x.id === initialErc20Selection)?.symbol ?? "");
+      let grossAmount: bigint;
+      let decimals: number;
+      try {
+        if (initialFundKind === "eth") {
+          const cfg = getPoolChainConfig(chainId);
+          grossAmount = await weiForUsdContribution(signer, cfg.ethUsdPriceFeed, canonical);
+          decimals = 18;
+        } else {
+          const preset = erc20Presets.find((x) => x.id === initialErc20Selection);
+          if (!preset) throw new Error("Token preset unavailable on this network.");
+          grossAmount = await erc20UsdToTokenAmount(signer, preset, canonical);
+          decimals = preset.decimals;
+        }
+      } catch {
+        setInitialFundProblem(describePreviewProblem("price", priceLabelForAsset(symbol)));
+        return;
+      }
+
+      // Stage 3 — local arithmetic only.
+      try {
+        setInitialFundSplit({ symbol, decimals, split: previewFundingSplit(grossAmount, bps) });
+      } catch {
+        setInitialFundProblem(describePreviewProblem("calculation"));
+      }
     } catch {
-      setInitialFundSplit(null);
+      setInitialFundProblem(describePreviewProblem("calculation"));
     } finally {
       setInitialFundSplitLoading(false);
     }
@@ -353,6 +383,7 @@ export default function DeployPoolModal({ open, onClose, onDeployed, onRequestFu
     setFeeWarning(null);
     setInitialFundSplit(null);
     setInitialFundSplitLoading(false);
+    setInitialFundProblem(null);
     setFundingPaused(null);
     setPreDeployFeeChanged(false);
   }, []);
@@ -1196,8 +1227,9 @@ export default function DeployPoolModal({ open, onClose, onDeployed, onRequestFu
                             role="alert"
                           >
                             <p className="text-sm text-amber-400">
-                              Could not read the current protocol fee. Deployment is blocked until
-                              it can be read, so you are never asked to fund a new pool with
+                              {initialFundProblem?.message ??
+                                describePreviewProblem("calculation").message}{" "}
+                              Deployment is blocked so you are never asked to fund a new pool with
                               unknown economics.
                             </p>
                             <button
