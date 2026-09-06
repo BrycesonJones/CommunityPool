@@ -96,13 +96,25 @@ Immediately before signing, a V2 contribution re-reads the live rate. If it move
 preview, the transaction is not submitted: the preview refreshes to the new economics and the user
 must press Fund again to confirm what they can now see. The rate can still change between that
 re-read and mining — V2 has no `maxFeeBps` transaction parameter — so the UI says so, and bounds it
-with the contract's immutable 3% ceiling.
+with the contract's immutable 3% ceiling. That last window is the only remaining one in either
+flow: every earlier opportunity for the rate to move unseen is now closed by a re-read.
 
-The deploy flow carries the same standard because it funds the pool immediately after creating it,
-with no second review in between: the step-4 review shows the initial contribution's gross, fee and
-net in token-native units, and deployment is blocked (with Retry) while the live ProtocolConfig fee
-cannot be read, rather than deploying and then prompting for a funding signature with unknown
-economics.
+The deploy flow submits two transactions back to back — create the pool, then fund it — with no
+review in between, so it re-reads the rate at both prompts:
+
+1. **Step 4 review** shows the initial contribution's gross, fee and net in token-native units.
+   Deployment is blocked (with Retry) while the live ProtocolConfig fee cannot be read.
+2. **Before the deployment prompt**, the rate is read again and compared with the reviewed one. If
+   it moved, nothing is deployed: the split is rebuilt at the new rate and Deploy must be pressed
+   again. If that read fails, the review drops back to its blocked state with Retry.
+3. **After the pool is confirmed, before the deposit prompt**, the rate is read a third time. If it
+   moved or cannot be read, the deposit is not sent and no wallet prompt opens.
+
+In that last case the pool already exists on chain and is never rolled back. It is persisted
+through the existing recovery path as `funding_pending` with `needsRecovery: true`, and the modal
+says plainly that the pool was created, that funding was paused, and that no funding transaction
+was submitted. "Review and fund this pool" hands it to the normal Fund flow, which performs its own
+fee confirmation — the deploy modal deliberately does not implement a second one.
 
 ### Fee presentation
 

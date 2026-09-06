@@ -199,3 +199,149 @@ describe("deploy modal initial-contribution economics", () => {
     expect(text).toMatch(/never exceed the 3% maximum/i);
   });
 });
+
+/**
+ * Deploy-time fee re-read gates (Phase 2.8 hardening, round 2).
+ *
+ * The deploy flow submits two transactions back to back with no review in between, so the fee is
+ * re-read twice: once immediately before the deployment prompt, and again after the pool is
+ * confirmed but before the deposit prompt. A pool that is already on-chain is never rolled back —
+ * it is preserved as funding-pending and handed to the reviewed Fund flow.
+ */
+describe("deploy-time protocol-fee re-read gates", () => {
+  const deployed = {
+    contract: {
+      getAddress: async () => "0x00000000000000000000000000000000000000AA",
+      waitForDeployment: async () => undefined,
+    },
+    deployTx: { hash: "0x" + "d".repeat(64), wait: async () => ({}) },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "1";
+    readChainProtocolFeeBpsMock.mockResolvedValue(100n);
+    weiForUsdMock.mockResolvedValue(1_000000000000000000n);
+    erc20UsdToHumanMock.mockResolvedValue("1.0");
+    deployCommunityPoolMock.mockResolvedValue(deployed);
+    fundPoolEthMock.mockResolvedValue({ hash: "0x" + "f".repeat(64), wait: async () => ({}) });
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ allowed: true, deployedPoolCount: 0 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    cleanup();
+    global.fetch = originalFetch;
+  });
+
+  it("deploys and funds when the rate is unchanged at both gates", async () => {
+    const onDeployed = vi.fn();
+    render(<DeployPoolModal open onClose={vi.fn()} onDeployed={onDeployed} />);
+    await advanceToReview();
+    await waitFor(() => expect(deployButton()).toBeEnabled());
+    fireEvent.click(deployButton());
+    await waitFor(() => expect(fundPoolEthMock).toHaveBeenCalledTimes(1));
+    expect(deployCommunityPoolMock).toHaveBeenCalledTimes(1);
+    const statuses = onDeployed.mock.calls.map((c) => c[0].fundingStatus);
+    expect(statuses).toContain("funded");
+  });
+
+  it("refuses to deploy when the rate changed between review and pressing Deploy", async () => {
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() => expect(deployButton()).toBeEnabled());
+    // Admin moves the rate after the review rendered.
+    readChainProtocolFeeBpsMock.mockResolvedValue(75n);
+    fireEvent.click(deployButton());
+    await waitFor(() => expect(document.body.textContent).toMatch(/protocol fee changed/i));
+    expect(deployCommunityPoolMock).not.toHaveBeenCalled();
+    expect(fundPoolEthMock).not.toHaveBeenCalled();
+    // The refreshed split is on screen; a second deliberate press now deploys.
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(0\.75%\)/i));
+    await waitFor(() => expect(deployButton()).toBeEnabled());
+    fireEvent.click(deployButton());
+    await waitFor(() => expect(deployCommunityPoolMock).toHaveBeenCalledTimes(1));
+  });
+
+  it("refuses to deploy when the pre-deployment fee read fails", async () => {
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() => expect(deployButton()).toBeEnabled());
+    readChainProtocolFeeBpsMock.mockResolvedValue(null);
+    fireEvent.click(deployButton());
+    await waitFor(() =>
+      expect(document.body.textContent).toMatch(/could not confirm the current protocol fee/i),
+    );
+    expect(deployCommunityPoolMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
+
+  it("pauses funding — without a wallet prompt — when the rate changes after deployment", async () => {
+    const onDeployed = vi.fn();
+    render(<DeployPoolModal open onClose={vi.fn()} onDeployed={onDeployed} />);
+    await advanceToReview();
+    await waitFor(() => expect(deployButton()).toBeEnabled());
+    // Unchanged at gate A, moved by gate B.
+    readChainProtocolFeeBpsMock.mockResolvedValueOnce(100n).mockResolvedValue(300n);
+    fireEvent.click(deployButton());
+    await waitFor(() => expect(document.body.textContent).toMatch(/initial funding paused/i));
+    expect(deployCommunityPoolMock).toHaveBeenCalledTimes(1);
+    expect(fundPoolEthMock).not.toHaveBeenCalled();
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    expect(text).toMatch(/no funding transaction was submitted/i);
+    expect(text).toMatch(/0x00000000000000000000000000000000000000AA/i);
+    // The deployed pool is preserved and recoverable, never rolled back.
+    const last = onDeployed.mock.calls.at(-1)![0];
+    expect(last.address.toLowerCase()).toBe("0x00000000000000000000000000000000000000aa");
+    expect(last.fundingStatus).toBe("funding_pending");
+    expect(last.needsRecovery).toBe(true);
+    expect(last.fundTxHash).toBeNull();
+  });
+
+  it("pauses funding when the post-deployment fee read fails", async () => {
+    const onDeployed = vi.fn();
+    render(<DeployPoolModal open onClose={vi.fn()} onDeployed={onDeployed} />);
+    await advanceToReview();
+    await waitFor(() => expect(deployButton()).toBeEnabled());
+    readChainProtocolFeeBpsMock.mockResolvedValueOnce(100n).mockResolvedValue(null);
+    fireEvent.click(deployButton());
+    await waitFor(() => expect(document.body.textContent).toMatch(/initial funding paused/i));
+    expect(fundPoolEthMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).toMatch(/could not be confirmed/i);
+    const last = onDeployed.mock.calls.at(-1)![0];
+    expect(last.fundingStatus).toBe("funding_pending");
+    expect(last.needsRecovery).toBe(true);
+  });
+
+  it("hands the paused pool to the reviewed Fund flow without redeploying", async () => {
+    const onRequestFund = vi.fn();
+    render(<DeployPoolModal open onClose={vi.fn()} onRequestFund={onRequestFund} />);
+    await advanceToReview();
+    await waitFor(() => expect(deployButton()).toBeEnabled());
+    readChainProtocolFeeBpsMock.mockResolvedValueOnce(100n).mockResolvedValue(300n);
+    fireEvent.click(deployButton());
+    await waitFor(() => expect(document.body.textContent).toMatch(/initial funding paused/i));
+    fireEvent.click(screen.getByRole("button", { name: /review and fund this pool/i }));
+    expect(onRequestFund).toHaveBeenCalledTimes(1);
+    expect(onRequestFund.mock.calls[0][0].address.toLowerCase()).toBe(
+      "0x00000000000000000000000000000000000000aa",
+    );
+    // Recovery must never re-run the deployment.
+    expect(deployCommunityPoolMock).toHaveBeenCalledTimes(1);
+    expect(fundPoolEthMock).not.toHaveBeenCalled();
+  });
+
+  it("does not present a paused run as a successful funded deployment", async () => {
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() => expect(deployButton()).toBeEnabled());
+    readChainProtocolFeeBpsMock.mockResolvedValueOnce(100n).mockResolvedValue(300n);
+    fireEvent.click(deployButton());
+    await waitFor(() => expect(document.body.textContent).toMatch(/initial funding paused/i));
+    expect(document.body.textContent).not.toMatch(/pool deployed and funded/i);
+    expect(screen.getByRole("button", { name: /^close$/i })).toBeInTheDocument();
+  });
+});
