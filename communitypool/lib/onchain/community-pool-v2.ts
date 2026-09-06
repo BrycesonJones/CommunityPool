@@ -1,24 +1,25 @@
 /**
- * CommunityPool V2 CANDIDATE artifact support.
+ * CommunityPool V2 artifact support (ACTIVE for new pool deployments as of Phase 2.8).
  *
- * NOT USED BY PRODUCTION. Production deploys from the frozen V1 artifact via
- * `deployCommunityPool` in ./community-pool.ts. This module exists so a later,
- * explicit activation phase can wire V2 in with the right types once a real
- * ProtocolConfig deployment exists on the target chain. It deliberately
- * exports no deploy helper and no config address: there is no placeholder
- * ProtocolConfig, and `address(0)` is rejected by the contract itself.
+ * `deployCommunityPool` in ./community-pool.ts deploys this artifact. The frozen V1 artifact
+ * stays in the tree because existing V1 pools are live user contracts that must keep working —
+ * it is used for reading and interacting with them, never for new deployments.
+ *
+ * The bytecode here is the exact artifact validated by the Phase 2.7 mainnet canary: the pool at
+ * 0x7Bcf72d773FEc6C69A027BBAf4F48606c6C39136 has runtime bytecode identical to this artifact's
+ * once the constructor immutables are masked out.
  *
  * Guarded by test/security/contract-artifact-boundary.test.ts and
  * scripts/check-frozen-v1-artifact.mjs.
  */
 
-import communityPoolV2Candidate from "./community-pool-v2-candidate-artifact.json";
-import protocolConfigCandidate from "./protocol-config-candidate-artifact.json";
+import communityPoolV2Candidate from "./community-pool-v2-artifact.json";
+import protocolConfigCandidate from "./protocol-config-artifact.json";
 
-export const COMMUNITY_POOL_V2_CANDIDATE_ARTIFACT = communityPoolV2Candidate;
-export const PROTOCOL_CONFIG_CANDIDATE_ARTIFACT = protocolConfigCandidate;
+export const COMMUNITY_POOL_V2_ARTIFACT = communityPoolV2Candidate;
+export const PROTOCOL_CONFIG_ARTIFACT = protocolConfigCandidate;
 
-/** Constructor arguments of the V2 candidate, in ABI order. */
+/** Constructor arguments of V2, in ABI order. */
 export type CommunityPoolV2ConstructorArgs = {
   name: string;
   description: string;

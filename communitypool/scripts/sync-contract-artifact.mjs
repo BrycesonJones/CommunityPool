@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Regenerate the CANDIDATE contract artifacts consumed by the Next.js app from
 // the canonical Foundry build output, OR (with --check) verify that the
-// committed candidate artifacts match what forge-out/ currently holds.
+// committed V2 artifacts match what forge-out/ currently holds.
 //
 // Artifact/version boundary (Phase 2.1):
 //   lib/onchain/community-pool-v1-artifact.json
@@ -9,10 +9,10 @@
 //       0xf564efc7…0c98). This script NEVER writes it. Its hash is guarded by
 //       scripts/check-frozen-v1-artifact.mjs; changing it is an explicit,
 //       reviewed event.
-//   lib/onchain/community-pool-v2-candidate-artifact.json
+//   lib/onchain/community-pool-v2-artifact.json
 //       Generated here from the current src/CommunityPool.sol. Candidate only:
 //       not used by production deployment until an explicit activation phase.
-//   lib/onchain/protocol-config-candidate-artifact.json
+//   lib/onchain/protocol-config-artifact.json
 //       Generated here from src/ProtocolConfig.sol. Candidate only.
 //
 // Provenance / determinism contract (Phase 2.0):
@@ -24,7 +24,7 @@
 //     build produced with a different solc, EVM target, optimizer setting, or
 //     remapping set is rejected rather than silently baked into an artifact.
 //   - CI enforces integrity as: forge clean -> forge build -> regenerate ->
-//     `git diff --exit-code` against the committed candidate files. The
+//     `git diff --exit-code` against the committed artifact files. The
 //     `--check` mode here is the local equivalent (committed files vs current
 //     forge-out) and must NOT be run right after a regenerate step, which would
 //     compare the files to themselves.
@@ -40,21 +40,21 @@ const FROZEN_V1_ARTIFACT = resolve(root, "lib/onchain/community-pool-v1-artifact
 
 const TARGETS = [
   {
-    label: "CommunityPool (V2 candidate)",
+    label: "CommunityPool V2",
     forgeOut: resolve(root, "forge-out/CommunityPool.sol/CommunityPool.json"),
-    artifact: resolve(root, "lib/onchain/community-pool-v2-candidate-artifact.json"),
+    artifact: resolve(root, "lib/onchain/community-pool-v2-artifact.json"),
     compilationTarget: { "src/CommunityPool.sol": "CommunityPool" },
   },
   {
-    label: "ProtocolConfig (candidate)",
+    label: "ProtocolConfig",
     forgeOut: resolve(root, "forge-out/ProtocolConfig.sol/ProtocolConfig.json"),
-    artifact: resolve(root, "lib/onchain/protocol-config-candidate-artifact.json"),
+    artifact: resolve(root, "lib/onchain/protocol-config-artifact.json"),
     compilationTarget: { "src/ProtocolConfig.sol": "ProtocolConfig" },
   },
 ];
 
 // Canonical build configuration. Keep in sync with foundry.toml. Changing any
-// of these is a deliberate, reviewed event that regenerates the candidates.
+// of these is a deliberate, reviewed event that regenerates them.
 const CANONICAL = {
   compilerVersion: "0.8.26+commit.8a97fa7a",
   evmVersion: "cancun",
@@ -149,13 +149,13 @@ for (const target of TARGETS) {
     const current = readFileSync(target.artifact, "utf8");
     if (current !== next) {
       console.error(
-        `[sync-contract-artifact] --check failed: ${target.label} committed candidate does not match forge-out.\n` +
+        `[sync-contract-artifact] --check failed: ${target.label} committed artifact does not match forge-out.\n` +
           "  Run `forge clean && forge build && npm run contracts:sync-artifact`, review the bytecode change, and commit the result.",
       );
       failed = true;
       continue;
     }
-    console.log(`[sync-contract-artifact] OK — ${target.label} candidate matches forge-out.`);
+    console.log(`[sync-contract-artifact] OK — ${target.label} artifact matches forge-out.`);
   } else {
     mkdirSync(dirname(target.artifact), { recursive: true });
     writeFileSync(target.artifact, next);

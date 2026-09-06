@@ -12,6 +12,14 @@ export type TokenConfigArg = {
   token: string;
   usdFeed: string;
   decimals: number;
+  /**
+   * Immutable maximum accepted age (seconds) of this token's USD price, fixed at pool
+   * construction. Policy is 2x the feed's documented heartbeat; see
+   * docs/deployment/phase-2-7-mainnet-canary.md for the per-feed evidence. `null` means the chain
+   * has no configured threshold, which blocks V2 deployment there but leaves read/fund UI working
+   * for pools that already exist.
+   */
+  maxPriceAge: number | null;
 };
 
 export type Erc20PresetId = "wbtc" | "paxg" | "xaut";
@@ -23,11 +31,21 @@ export type Erc20Preset = {
   token: string;
   usdFeed: string;
   decimals: number;
+  maxPriceAge: number | null;
 };
 
 export type PoolChainConfig = {
   chainId: bigint;
   ethUsdPriceFeed: string;
+  /** Immutable maximum accepted age (seconds) of the ETH/USD price for new pools; null if unset. */
+  ethUsdMaxPriceAge: number | null;
+  /**
+   * The chain's single shared ProtocolConfig deployment (fee rate + treasury). Every V2 pool on
+   * the chain points at this one address; it is never chosen or edited by a user, and there is no
+   * placeholder — a chain without a real deployment cannot deploy V2 pools, which is expressed as
+   * `null` here and enforced at deploy time.
+   */
+  protocolConfig: string | null;
   /** @deprecated Use getDefaultErc20TokenConfigs / getErc20Presets — kept for callers that only need WBTC. */
   wrappedBtc: TokenConfigArg | null;
   paxGold: TokenConfigArg | null;
@@ -41,6 +59,23 @@ export const PLATFORM_DEFAULT_SUPPORTED_ASSETS_DISPLAY =
 
 const SEPOLIA_ETH_USD = "0x694AA1769357215DE4FAC081bf1f309aDC325306";
 const MAINNET_ETH_USD = "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419";
+
+/**
+ * Per-feed freshness thresholds (seconds), immutable once a pool is deployed. Policy is 2x the
+ * feed's documented Chainlink heartbeat, verified against reference data and on-chain reads in
+ * Phase 2.6 (docs/deployment/phase-2-7-mainnet-canary.md). These mirror the Foundry deploy script
+ * constants in script/DeployCommunityPool.s.sol; the pool constructor rejects a zero value.
+ */
+const MAINNET_HOURLY_FEED_MAX_AGE = 7_200; // ETH/USD and BTC/USD: 3600 s heartbeat
+const MAINNET_DAILY_FEED_MAX_AGE = 172_800; // PAXG/USD and XAU/USD: 86400 s heartbeat
+
+/**
+ * Shared Ethereum-mainnet ProtocolConfig deployed in the Phase 2.7 canary
+ * (tx 0x8b3249d41ce0935d9987a388f710aaf65d5e89116bc7bf80be6f3011899ce4d7). Admin and treasury are
+ * state inside that contract, deliberately not mirrored here: the app never needs them, and the
+ * pool reads the live values on every contribution.
+ */
+const MAINNET_PROTOCOL_CONFIG = "0x2eD7F089a6C2971B24eA91121aD65f9242F622c0";
 
 /** PAX Gold token (Ethereum mainnet). */
 const MAINNET_PAXG_TOKEN = "0x45804880De22913dAFE09f4980848ECE6EcbAf78";
@@ -57,7 +92,7 @@ function sepoliaWbtcFromEnv(): TokenConfigArg | null {
   const usdFeed = process.env.NEXT_PUBLIC_SEPOLIA_WBTC_USD_FEED?.trim();
   if (!token || !usdFeed) return null;
   const decimals = Number(process.env.NEXT_PUBLIC_SEPOLIA_WBTC_DECIMALS ?? "8");
-  return { token, usdFeed, decimals };
+  return { token, usdFeed, decimals, maxPriceAge: envMaxPriceAge("NEXT_PUBLIC_SEPOLIA_TOKEN_USD_MAX_AGE") };
 }
 
 function sepoliaPaxgFromEnv(): TokenConfigArg | null {
@@ -65,7 +100,7 @@ function sepoliaPaxgFromEnv(): TokenConfigArg | null {
   const usdFeed = process.env.NEXT_PUBLIC_SEPOLIA_PAXG_USD_FEED?.trim();
   if (!token || !usdFeed) return null;
   const decimals = Number(process.env.NEXT_PUBLIC_SEPOLIA_PAXG_DECIMALS ?? "18");
-  return { token, usdFeed, decimals };
+  return { token, usdFeed, decimals, maxPriceAge: envMaxPriceAge("NEXT_PUBLIC_SEPOLIA_TOKEN_USD_MAX_AGE") };
 }
 
 function sepoliaXautFromEnv(): TokenConfigArg | null {
@@ -73,7 +108,7 @@ function sepoliaXautFromEnv(): TokenConfigArg | null {
   const usdFeed = process.env.NEXT_PUBLIC_SEPOLIA_XAUT_USD_FEED?.trim();
   if (!token || !usdFeed) return null;
   const decimals = Number(process.env.NEXT_PUBLIC_SEPOLIA_XAUT_DECIMALS ?? "6");
-  return { token, usdFeed, decimals };
+  return { token, usdFeed, decimals, maxPriceAge: envMaxPriceAge("NEXT_PUBLIC_SEPOLIA_TOKEN_USD_MAX_AGE") };
 }
 
 function mainnetWbtc(): TokenConfigArg {
@@ -81,6 +116,7 @@ function mainnetWbtc(): TokenConfigArg {
     token: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
     usdFeed: "0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c",
     decimals: 8,
+    maxPriceAge: MAINNET_HOURLY_FEED_MAX_AGE,
   };
 }
 
@@ -89,6 +125,7 @@ function mainnetPaxg(): TokenConfigArg {
     token: MAINNET_PAXG_TOKEN,
     usdFeed: MAINNET_PAXG_USD_FEED,
     decimals: 18,
+    maxPriceAge: MAINNET_DAILY_FEED_MAX_AGE,
   };
 }
 
@@ -97,7 +134,28 @@ function mainnetTetherGold(): TokenConfigArg {
     token: MAINNET_XAUT_TOKEN,
     usdFeed: MAINNET_XAU_USD_FEED,
     decimals: 6,
+    maxPriceAge: MAINNET_DAILY_FEED_MAX_AGE,
   };
+}
+
+/**
+ * Deploy-time-only values are read leniently here and validated at the deploy call. Reading a
+ * config must never throw: the funding, withdraw and balance screens call it for pools that
+ * already exist, and those must keep working on any chain regardless of whether new V2
+ * deployments are configured there. There is deliberately no fallback to another chain's
+ * ProtocolConfig — an unset value stays null and blocks deployment.
+ */
+function envAddressOrNull(varName: string): string | null {
+  return process.env[varName]?.trim() || null;
+}
+
+/** Feeds outside mainnet have looser cadence, so the threshold must be stated explicitly. */
+function envMaxPriceAge(varName: string): number | null {
+  const raw = process.env[varName]?.trim();
+  if (!raw) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.floor(n);
 }
 
 /**
@@ -109,6 +167,8 @@ function localFromEnv(): PoolChainConfig | null {
   return {
     chainId: BigInt(31337),
     ethUsdPriceFeed: feed,
+    ethUsdMaxPriceAge: envMaxPriceAge("NEXT_PUBLIC_LOCAL_ETH_USD_MAX_AGE") ?? 86_400,
+    protocolConfig: envAddressOrNull("NEXT_PUBLIC_LOCAL_PROTOCOL_CONFIG"),
     wrappedBtc: null,
     paxGold: null,
     tetherGold: null,
@@ -198,10 +258,11 @@ export function describeDefaultPoolAssets(chainId: bigint): string {
 
 /** Constructor `tokenConfigs`: all default ERC20s for this chain (stable order: WBTC, PAXG, XAU₮). */
 export function getDefaultErc20TokenConfigs(chainId: bigint): TokenConfigArg[] {
-  return getErc20Presets(chainId).map(({ token, usdFeed, decimals }) => ({
+  return getErc20Presets(chainId).map(({ token, usdFeed, decimals, maxPriceAge }) => ({
     token,
     usdFeed,
     decimals,
+    maxPriceAge,
   }));
 }
 
@@ -220,6 +281,8 @@ export function getPoolChainConfig(chainId: bigint): PoolChainConfig {
     return {
       chainId,
       ethUsdPriceFeed: SEPOLIA_ETH_USD,
+      ethUsdMaxPriceAge: envMaxPriceAge("NEXT_PUBLIC_SEPOLIA_ETH_USD_MAX_AGE"),
+      protocolConfig: envAddressOrNull("NEXT_PUBLIC_SEPOLIA_PROTOCOL_CONFIG"),
       wrappedBtc: sepoliaWbtcFromEnv(),
       paxGold: sepoliaPaxgFromEnv(),
       tetherGold: sepoliaXautFromEnv(),
@@ -229,6 +292,8 @@ export function getPoolChainConfig(chainId: bigint): PoolChainConfig {
     return {
       chainId,
       ethUsdPriceFeed: MAINNET_ETH_USD,
+      ethUsdMaxPriceAge: MAINNET_HOURLY_FEED_MAX_AGE,
+      protocolConfig: MAINNET_PROTOCOL_CONFIG,
       wrappedBtc: mainnetWbtc(),
       paxGold: mainnetPaxg(),
       tetherGold: mainnetTetherGold(),

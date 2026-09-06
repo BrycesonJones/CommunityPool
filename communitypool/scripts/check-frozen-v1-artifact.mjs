@@ -52,8 +52,13 @@ export function checkFrozenV1Artifact() {
   if (!/from\s+["']\.\/community-pool-v1-artifact\.json["']/.test(helper)) {
     problems.push(`${PRODUCTION_DEPLOY_HELPER} must import ./community-pool-v1-artifact.json`);
   }
-  if (/candidate-artifact\.json|community-pool-v2-candidate/.test(helper)) {
-    problems.push(`${PRODUCTION_DEPLOY_HELPER} must not reference a candidate artifact (V2 is not activated)`);
+  // Phase 2.8: new pools deploy V2. The V1 artifact stays for reading/interacting with the
+  // existing live pools, but it must never reach a ContractFactory again.
+  if (!/COMMUNITY_POOL_V2_ARTIFACT\.bytecode/.test(helper)) {
+    problems.push(`${PRODUCTION_DEPLOY_HELPER} must deploy new pools from COMMUNITY_POOL_V2_ARTIFACT`);
+  }
+  if (/new ContractFactory\(\s*artifact\.abi/.test(helper)) {
+    problems.push(`${PRODUCTION_DEPLOY_HELPER} must not deploy the frozen V1 artifact`);
   }
   return problems;
 }
@@ -65,6 +70,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     process.exit(1);
   }
   console.log(
-    `[check-frozen-v1-artifact] OK — ${FROZEN_V1_ARTIFACT_PATH} creation bytecode keccak ${FROZEN_V1_CREATION_BYTECODE_KECCAK}; production deploys V1.`,
+    `[check-frozen-v1-artifact] OK — ${FROZEN_V1_ARTIFACT_PATH} creation bytecode keccak ${FROZEN_V1_CREATION_BYTECODE_KECCAK}; V1 frozen, new pools deploy V2.`,
   );
 }

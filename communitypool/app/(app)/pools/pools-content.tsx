@@ -517,6 +517,10 @@ export default function PoolsContent() {
         open={openModal === "deploy"}
         onClose={closeModal}
         onDeployed={handlePoolDeployed}
+        // When the deploy flow pauses its initial deposit (the protocol fee moved or could not be
+        // confirmed after the pool was created), hand the deployed pool straight to the reviewed
+        // Fund flow rather than confirming the fee a second way inside the deploy modal.
+        onRequestFund={handleFundPoolRow}
       />
       <FundPoolModal
         open={openModal === "fund"}

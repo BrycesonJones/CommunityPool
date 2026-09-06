@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { isAddress, getAddress } from "ethers";
+import { isAddress, getAddress, parseUnits } from "ethers";
 import { useWallet } from "@/components/wallet-provider";
 import {
   fundPoolEth,
@@ -20,6 +20,14 @@ import {
   parsePositiveDecimal,
   validateFundEthUsdHuman,
 } from "@/lib/onchain/tx-economics";
+import {
+  buildFundingPreview,
+  formatFeeBpsPercent,
+  formatTokenAmount,
+  readLiveProtocolFee,
+  type FundingPreview,
+} from "@/lib/onchain/protocol-fee";
+import { weiForUsdContribution } from "@/lib/onchain/price-math";
 import { postClientSecurityEvent } from "@/lib/security/client-security-event";
 
 type Step = 1 | 2 | 3;
@@ -90,6 +98,10 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
   const [whitelistLower, setWhitelistLower] = useState<Set<string> | null>(null);
   const [whitelistLoading, setWhitelistLoading] = useState(false);
   const [feeWarning, setFeeWarning] = useState<string | null>(null);
+  const [feePreview, setFeePreview] = useState<FundingPreview | null>(null);
+  const [feePreviewLoading, setFeePreviewLoading] = useState(false);
+  /** Set when the live rate moved between preview and submit; cleared once the user re-reviews. */
+  const [feeRateChanged, setFeeRateChanged] = useState(false);
 
   const erc20Presets = useMemo(
     () => getErc20PresetsForPoolChain(initialPool?.chainId, chainId),
@@ -194,6 +206,9 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
     setWhitelistLower(null);
     setWhitelistLoading(false);
     setFeeWarning(null);
+    setFeePreview(null);
+    setFeePreviewLoading(false);
+    setFeeRateChanged(false);
   }, []);
 
   useEffect(() => {
@@ -216,6 +231,55 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
     setErrors(next);
     return Object.keys(next).length === 0;
   }
+
+  /**
+   * Protocol-fee preview for the review step. Uses the same gross amount the funding transaction
+   * will send, so what the user sees is what settles. Prices can move between this read and the
+   * signature, which shifts the gross slightly; the fee *rate* shown stays exact either way.
+   */
+  const loadFeePreview = useCallback(async (clearRateChange = true): Promise<void> => {
+    setFeePreview(null);
+    if (clearRateChange) setFeeRateChanged(false);
+    if (!signer || chainId === null) return;
+    const addr = poolAddress.trim();
+    if (!isAddress(addr)) return;
+    setFeePreviewLoading(true);
+    try {
+      let grossAmount: bigint;
+      let symbol: string;
+      let decimals: number;
+      if (fundKind === "eth") {
+        const cfg = getPoolChainConfig(chainId);
+        grossAmount = await weiForUsdContribution(signer, cfg.ethUsdPriceFeed, fundAmount.trim());
+        symbol = "ETH";
+        decimals = 18;
+      } else {
+        const preset = erc20Presets.find((x) => x.id === erc20Pick);
+        if (!preset) return;
+        const human = await erc20UsdToHumanAmountString(signer, preset, fundAmount.trim());
+        if (human === null) return;
+        grossAmount = parseUnits(human, preset.decimals);
+        symbol = preset.symbol;
+        decimals = preset.decimals;
+      }
+      setFeePreview(
+        await buildFundingPreview({
+          provider: signer.provider!,
+          poolAddress: getAddress(addr),
+          grossAmount,
+          symbol,
+          decimals,
+        }),
+      );
+    } catch {
+      setFeePreview({
+        kind: "unavailable",
+        message: "Could not read this pool's current protocol fee from the network.",
+      });
+    } finally {
+      setFeePreviewLoading(false);
+    }
+  }, [signer, chainId, poolAddress, fundKind, fundAmount, erc20Presets, erc20Pick]);
 
   function resolveToken(): string {
     const p = erc20Presets.find((x) => x.id === erc20Pick);
@@ -253,6 +317,7 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
       }
     }
     setStep(3);
+    void loadFeePreview();
   }
 
   function assetSummary(): string {
@@ -287,7 +352,43 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
       }
       return;
     }
+    // Fail closed: never open a wallet prompt while the economics of this contribution are
+    // unknown. A V1 pool has no fee to resolve; a V2 pool must have produced a successful split.
+    if (!feePreview || feePreviewLoading || feePreview.kind === "unavailable") {
+      setFundError(
+        "The protocol fee for this pool has not been read yet. Review the funding details before continuing.",
+      );
+      return;
+    }
     const pool = getAddress(poolAddress.trim());
+
+    // Defence in depth: the rate is protocol state that an admin can change at any time, so
+    // re-read it immediately before signing. If it moved since the preview, refresh and make the
+    // user look at the new numbers rather than signing for economics they never saw.
+    if (feePreview.kind === "split") {
+      let liveBps: bigint;
+      try {
+        liveBps = (await readLiveProtocolFee(signer.provider!, pool)).feeBps;
+      } catch {
+        setFeePreview({
+          kind: "unavailable",
+          message: "Could not re-check this pool's protocol fee before signing.",
+        });
+        setFundError("Could not confirm the current protocol fee. Retry before funding.");
+        return;
+      }
+      setFeeRateChanged(false);
+      if (liveBps !== feePreview.split.feeBps) {
+        setFeeRateChanged(true);
+        setFundError(
+          `The protocol fee changed from ${formatFeeBpsPercent(feePreview.split.feeBps)} to ` +
+            `${formatFeeBpsPercent(liveBps)} while you were reviewing. Check the updated amounts, then fund again.`,
+        );
+        await loadFeePreview(false);
+        return;
+      }
+    }
+
     const walletAddress = await signer.getAddress().catch(() => "");
     setFundPending(true);
     try {
@@ -388,6 +489,16 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
   if (!open) return null;
 
   const isFirstStep = step === 1;
+  /**
+   * Funding may only be signed once the economics are known: a V1 pool has no protocol fee, and a
+   * V2 pool must have produced a successful live-rate split. Loading, a failed read, or a rate
+   * change awaiting re-review all keep the button disabled.
+   */
+  const feeResolved =
+    feePreview !== null &&
+    !feePreviewLoading &&
+    (feePreview.kind === "no-fee" || feePreview.kind === "split");
+  const canSubmitFunding = step !== 3 || feeResolved;
   const primaryLabel = step === 3 ? (fundPending ? "Confirm in wallet…" : "Fund") : "Continue";
 
   const stepTitles: Record<Step, string> = {
@@ -519,6 +630,70 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
                   <dt className="text-zinc-500">Amount (human dollars, USD)</dt>
                   <dd className="text-white">{fundAmount || "—"}</dd>
                 </div>
+                {feePreviewLoading && (
+                  <p className="text-xs text-zinc-500" role="status">
+                    Reading this pool’s current protocol fee…
+                  </p>
+                )}
+                {feePreview?.kind === "split" && (
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+                    <div className="flex justify-between gap-4">
+                      <span className="text-zinc-400">Funding amount</span>
+                      <span className="text-white font-mono">
+                        {formatTokenAmount(feePreview.split.grossAmount, feePreview.decimals)}{" "}
+                        {feePreview.symbol}
+                      </span>
+                    </div>
+                    <div className="mt-1 flex justify-between gap-4">
+                      <span className="text-zinc-400">
+                        Protocol fee ({formatFeeBpsPercent(feePreview.split.feeBps)})
+                      </span>
+                      <span className="text-white font-mono">
+                        {formatTokenAmount(feePreview.split.feeAmount, feePreview.decimals)}{" "}
+                        {feePreview.symbol}
+                      </span>
+                    </div>
+                    <div className="mt-1 flex justify-between gap-4">
+                      <span className="text-zinc-400">Pool receives</span>
+                      <span className="text-white font-mono">
+                        {formatTokenAmount(feePreview.split.netAmount, feePreview.decimals)}{" "}
+                        {feePreview.symbol}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs text-zinc-500">
+                      The protocol fee comes out of the amount you fund — it is not added on top.
+                      Your wallet is debited the funding amount, plus network gas. Amounts are
+                      estimated from the current price and settle at the price when your
+                      transaction is mined. The fee rate lives on-chain and is re-checked when you
+                      press Fund; it can still change before your transaction is mined, and can
+                      never exceed the contract’s 3% maximum.
+                    </p>
+                  </div>
+                )}
+                {feePreview?.kind === "unavailable" && !feePreviewLoading && (
+                  <div
+                    className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3"
+                    role="alert"
+                  >
+                    <p className="text-sm text-amber-400">
+                      {feePreview.message} Funding is blocked until the current protocol fee can be
+                      read, so you are never asked to sign for economics we could not confirm.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void loadFeePreview()}
+                      className="mt-2 rounded-lg bg-zinc-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
+                {feeRateChanged && (
+                  <p className="text-sm text-amber-400" role="alert">
+                    The protocol fee changed while you were reviewing. Check the updated amounts
+                    above, then press Fund again.
+                  </p>
+                )}
                 {lastTxHash && (
                   <div>
                     <dt className="text-zinc-500">Last tx</dt>
@@ -556,7 +731,7 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
           <button
             type="button"
             onClick={handleContinue}
-            disabled={fundPending}
+            disabled={fundPending || !canSubmitFunding}
             className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 focus:ring-offset-zinc-950 disabled:opacity-50"
           >
             {primaryLabel}

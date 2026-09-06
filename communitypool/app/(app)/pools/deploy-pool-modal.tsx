@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useMemo } from "react";
-import { getAddress, isAddress } from "ethers";
+import { getAddress, isAddress, parseUnits } from "ethers";
 import { useWallet } from "@/components/wallet-provider";
 import { formatUnits } from "ethers";
 import { createClient } from "@/lib/supabase/client";
@@ -38,6 +38,13 @@ import {
   sanitizeUsdAmountInputTyping,
   validateUsdAmountInputMessage,
 } from "@/lib/onchain/usd-amount-input";
+import {
+  formatFeeBpsPercent,
+  formatTokenAmount,
+  previewFundingSplit,
+  readChainProtocolFeeBps,
+  type FundingSplit,
+} from "@/lib/onchain/protocol-fee";
 import { postClientSecurityEvent } from "@/lib/security/client-security-event";
 
 type Step = 1 | 2 | 3 | 4;
@@ -70,6 +77,12 @@ type Props = {
   open: boolean;
   onClose: () => void;
   onDeployed?: (pool: DeployedPoolSummary) => void;
+  /**
+   * Hand a deployed-but-unfunded pool to the normal Fund flow. Used when the initial contribution
+   * is paused because the protocol fee moved or could not be confirmed: rather than duplicating
+   * fee confirmation here, the user finishes in the reviewed funding UI.
+   */
+  onRequestFund?: (pool: { name: string; address: string; chainId: number }) => void;
 };
 
 function BackIcon() {
@@ -91,7 +104,7 @@ function BackIcon() {
   );
 }
 
-export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
+export default function DeployPoolModal({ open, onClose, onDeployed, onRequestFund }: Props) {
   const { signer, isConnected, chainId, isWrongNetwork, switchToExpectedNetwork } = useWallet();
 
   const [step, setStep] = useState<Step>(1);
@@ -110,6 +123,34 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
   const [fundTxHash, setFundTxHash] = useState<string | null>(null);
   const [deployedAddress, setDeployedAddress] = useState<string | null>(null);
   const [feeWarning, setFeeWarning] = useState<string | null>(null);
+  /**
+   * Live protocol fee for this chain. Held as state only so a failed read is distinguishable from
+   * a zero rate; the numbers the user sees come from `initialFundSplit`.
+   */
+  const [, setProtocolFeeBps] = useState<bigint | null>(null);
+  const [protocolFeeLoading, setProtocolFeeLoading] = useState(false);
+  /**
+   * Token-native economics of the initial contribution this flow makes right after deployment.
+   * The deploy flow funds without a second review, so the numbers must be shown before the first
+   * wallet prompt, not between the two transactions.
+   */
+  const [initialFundSplit, setInitialFundSplit] = useState<
+    { symbol: string; decimals: number; split: FundingSplit } | null
+  >(null);
+  const [initialFundSplitLoading, setInitialFundSplitLoading] = useState(false);
+  /**
+   * Set when the initial contribution was NOT submitted because the protocol fee moved, or could
+   * not be confirmed, at one of the two re-read gates. The pool itself is already deployed and is
+   * persisted as funding-pending; the user finishes through the reviewed Fund flow.
+   */
+  const [fundingPaused, setFundingPaused] = useState<{
+    reason: "fee_changed" | "fee_unreadable";
+    poolAddress: string;
+    reviewedBps: bigint;
+    currentBps: bigint | null;
+  } | null>(null);
+  /** Set when the rate moved between the step-4 preview and pressing Deploy. */
+  const [preDeployFeeChanged, setPreDeployFeeChanged] = useState(false);
 
   const erc20Presets = useMemo(
     () => getErc20PresetsForDeployModal(chainId),
@@ -121,12 +162,114 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
     return describePlatformAcceptedAssetsForDeploy(chainId);
   }, [chainId]);
 
+  /**
+   * Read the chain's live protocol fee so the deploy summary states the real rate. New pools are
+   * V2, so every contribution — including the initial deposit in this flow — pays it. Left null on
+   * a read failure; the summary then describes the fee without asserting a number.
+   */
+
   const minExpirationYmd = getMinExpirationYmd();
 
   const normalizedFundAmount = useMemo<string | null>(() => {
     const r = normalizeUsdAmountInput(fundAmount);
     return r.ok ? r.canonical : null;
   }, [fundAmount]);
+
+  const loadProtocolFee = useCallback(async (): Promise<bigint | null> => {
+    if (!signer || chainId === null) {
+      setProtocolFeeBps(null);
+      return null;
+    }
+    setProtocolFeeLoading(true);
+    try {
+      const cfg = getPoolChainConfig(chainId);
+      if (!cfg.protocolConfig) {
+        setProtocolFeeBps(null);
+        return null;
+      }
+      const bps = await readChainProtocolFeeBps(signer.provider!, cfg.protocolConfig);
+      setProtocolFeeBps(bps);
+      return bps;
+    } catch {
+      setProtocolFeeBps(null);
+      return null;
+    } finally {
+      setProtocolFeeLoading(false);
+    }
+  }, [signer, chainId]);
+
+  // Depend on stable primitives, not on the callback identity: a wallet provider that hands back
+  // a fresh signer object on each render would otherwise re-fire this effect every render and
+  // hammer the RPC (and flicker the review step back into its loading state).
+  const hasSigner = Boolean(signer);
+  useEffect(() => {
+    void loadProtocolFee();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chainId, hasSigner]);
+
+  /**
+   * One raw read of the chain's current protocol fee. Returns null when the chain has no
+   * ProtocolConfig configured or the read fails, so callers can distinguish "unknown" from a
+   * genuine 0 bps.
+   */
+  const readCurrentFeeBps = useCallback(async (): Promise<bigint | null> => {
+    if (!signer || chainId === null) return null;
+    try {
+      const cfg = getPoolChainConfig(chainId);
+      if (!cfg.protocolConfig) return null;
+      return await readChainProtocolFeeBps(signer.provider!, cfg.protocolConfig);
+    } catch {
+      return null;
+    }
+  }, [signer, chainId]);
+
+  /**
+   * Resolve the initial contribution's split for the review step. Deploying immediately proceeds
+   * into a funding transaction, so the flow must not start while the live rate is unknown — a
+   * transient RPC failure asks for a retry instead of deploying a pool and then prompting for a
+   * funding signature with unknown economics.
+   */
+  const loadInitialFundSplit = useCallback(async (): Promise<void> => {
+    setInitialFundSplit(null);
+    if (!signer || chainId === null) return;
+    const canonical = normalizedFundAmount;
+    if (canonical === null) return;
+    setInitialFundSplitLoading(true);
+    try {
+      const bps = await loadProtocolFee();
+      if (bps === null) return;
+      let grossAmount: bigint;
+      let symbol: string;
+      let decimals: number;
+      if (initialFundKind === "eth") {
+        const cfg = getPoolChainConfig(chainId);
+        grossAmount = await weiForUsdContribution(signer, cfg.ethUsdPriceFeed, canonical);
+        symbol = "ETH";
+        decimals = 18;
+      } else {
+        const preset = erc20Presets.find((x) => x.id === initialErc20Selection);
+        if (!preset) return;
+        const human = await erc20UsdToHumanAmountString(signer, preset, canonical);
+        if (human === null) return;
+        grossAmount = parseUnits(human, preset.decimals);
+        symbol = preset.symbol;
+        decimals = preset.decimals;
+      }
+      setInitialFundSplit({ symbol, decimals, split: previewFundingSplit(grossAmount, bps) });
+    } catch {
+      setInitialFundSplit(null);
+    } finally {
+      setInitialFundSplitLoading(false);
+    }
+  }, [
+    signer,
+    chainId,
+    normalizedFundAmount,
+    initialFundKind,
+    initialErc20Selection,
+    erc20Presets,
+    loadProtocolFee,
+  ]);
 
   useEffect(() => {
     if (erc20Presets.length === 0 && initialFundKind === "erc20") {
@@ -208,6 +351,10 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
     setFundTxHash(null);
     setDeployedAddress(null);
     setFeeWarning(null);
+    setInitialFundSplit(null);
+    setInitialFundSplitLoading(false);
+    setFundingPaused(null);
+    setPreDeployFeeChanged(false);
   }, []);
 
   useEffect(() => {
@@ -359,6 +506,35 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
       );
       return;
     }
+    // Gate A — the rate the user reviewed must still hold at the moment we ask them to sign.
+    // Step 4 read it when the review rendered, and an admin can move it in between.
+    const reviewedBps = initialFundSplit?.split.feeBps ?? null;
+    if (reviewedBps === null) {
+      setDeployError(
+        "The current protocol fee could not be read. Retry above before deploying — the deploy flow funds the pool immediately after creating it.",
+      );
+      return;
+    }
+    const preDeployBps = await readCurrentFeeBps();
+    if (preDeployBps === null) {
+      // Unknown rate: drop back to the blocked review state, which offers Retry.
+      setInitialFundSplit(null);
+      setDeployError(
+        "Could not confirm the current protocol fee before deploying. Retry above, then deploy.",
+      );
+      return;
+    }
+    if (preDeployBps !== reviewedBps) {
+      setPreDeployFeeChanged(true);
+      setDeployError(
+        `The protocol fee changed from ${formatFeeBpsPercent(reviewedBps)} to ` +
+          `${formatFeeBpsPercent(preDeployBps)} while you were reviewing. Check the updated amounts, then deploy again.`,
+      );
+      await loadInitialFundSplit();
+      return;
+    }
+    setPreDeployFeeChanged(false);
+
     setDeploying(true);
     setFundTxHash(null);
     const walletAddress = await signer.getAddress().catch(() => "");
@@ -461,6 +637,49 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
         status: "confirmed",
         safe_message: "Deploy transaction confirmed.",
       });
+
+      // Gate B — the pool now exists, and the funding prompt is about to open automatically.
+      // Confirm the rate the user reviewed is still live; if it moved or cannot be read, do not
+      // fund. The pool is already persisted as funding-pending above, so nothing is lost: the
+      // user finishes in the reviewed Fund flow instead of signing unreviewed economics.
+      const preFundBps = await readCurrentFeeBps();
+      if (preFundBps === null || preFundBps !== reviewedBps) {
+        setFundingPaused({
+          reason: preFundBps === null ? "fee_unreadable" : "fee_changed",
+          poolAddress: getAddress(poolAddr),
+          reviewedBps,
+          currentBps: preFundBps,
+        });
+        onDeployed?.({
+          name: name.trim(),
+          description: description.trim(),
+          address: getAddress(poolAddr),
+          chainId: Number(chainId),
+          totalUsd,
+          expiresAtUnix: Number(dateInputToExpiresAtUnix(expirationDate)),
+          minimumUsdWei,
+          deployTxHash: deployTx.hash,
+          fundTxHash: null,
+          fundingStatus: "funding_pending",
+          needsRecovery: true,
+          coOwners: owners.map((o) => getAddress(o.trim())),
+          deployerAddress,
+          assetType: initialAssetType,
+          fundedAmountHuman: "",
+        });
+        await postClientSecurityEvent({
+          event_type: "pool.fund.blocked",
+          severity: "medium",
+          chain_id: Number(chainId),
+          pool_address: getAddress(poolAddr),
+          wallet_address: walletAddress,
+          action: "fund",
+          status: "blocked",
+          error_code: preFundBps === null ? "fee_unreadable" : "fee_changed",
+          safe_message: "Initial funding paused before the wallet prompt; protocol fee unconfirmed.",
+        });
+        return;
+      }
 
       const cfg = getPoolChainConfig(chainId);
       let fundTx;
@@ -594,12 +813,21 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
     } else if (step === 3) {
       if (!validateStep3()) return;
       setStep(4);
+      void loadInitialFundSplit();
     } else if (step === 4) {
       const partialFail = Boolean(deployedAddress && deployError);
       const ok = Boolean(deployedAddress && !deployError);
-      if (ok || partialFail) {
+      if (ok || partialFail || fundingPaused) {
         onClose();
         resetForm();
+        return;
+      }
+      if (!initialFundSplit) {
+        // Deploying proceeds straight into a funding transaction; refuse to start that pair while
+        // the fee is unknown rather than deploying and then prompting with unknown economics.
+        setDeployError(
+          "The current protocol fee could not be read. Retry above before deploying — the deploy flow funds the pool immediately after creating it.",
+        );
         return;
       }
       void runDeploy();
@@ -631,13 +859,14 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
   if (!open) return null;
 
   const isFirstStep = step === 1;
-  const success = Boolean(deployedAddress) && !deployError;
+  const success = Boolean(deployedAddress) && !deployError && !fundingPaused;
   const partialFail = Boolean(deployedAddress && deployError);
+  const paused = Boolean(fundingPaused);
   const primaryLabel =
     step === 3
       ? "Review"
       : step === 4
-        ? success || partialFail
+        ? success || partialFail || paused
           ? "Close"
           : "Deploy"
         : "Continue";
@@ -808,7 +1037,68 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
           )}
           {step === 4 && (
             <>
-              {success ? (
+              {fundingPaused ? (
+                <div className="space-y-3 text-sm">
+                  <p className="text-amber-400 font-medium">
+                    Pool deployed — initial funding paused
+                  </p>
+                  <div>
+                    <dt className="text-zinc-500">Contract address</dt>
+                    <dd className="text-white font-mono text-xs break-all mt-1">
+                      {fundingPaused.poolAddress}
+                    </dd>
+                  </div>
+                  {deployTxHash && (
+                    <div>
+                      <dt className="text-zinc-500">Deploy transaction</dt>
+                      <dd className="text-white font-mono text-xs break-all mt-1">{deployTxHash}</dd>
+                    </div>
+                  )}
+                  <p className="text-zinc-300">
+                    {fundingPaused.reason === "fee_changed" ? (
+                      <>
+                        Your pool was created successfully. The protocol fee changed from{" "}
+                        {formatFeeBpsPercent(fundingPaused.reviewedBps)} to{" "}
+                        {fundingPaused.currentBps === null
+                          ? "another rate"
+                          : formatFeeBpsPercent(fundingPaused.currentBps)}{" "}
+                        after the pool was created, so the deposit was not sent.
+                      </>
+                    ) : (
+                      <>
+                        Your pool was created successfully. The current protocol fee could not be
+                        confirmed after the pool was created, so the deposit was not sent.
+                      </>
+                    )}{" "}
+                    <strong className="text-white">
+                      No funding transaction was submitted and nothing was charged for it
+                    </strong>
+                    {" "}— only the deployment gas you already paid. The pool is saved and waiting
+                    for its first deposit.
+                  </p>
+                  <p className="text-zinc-400 text-xs">
+                    Fund it whenever you like from the Fund flow, which shows the current fee and
+                    the exact split before you sign.
+                  </p>
+                  {onRequestFund && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const target = {
+                          name: name.trim(),
+                          address: fundingPaused.poolAddress,
+                          chainId: Number(chainId ?? 0),
+                        };
+                        resetForm();
+                        onRequestFund(target);
+                      }}
+                      className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                    >
+                      Review and fund this pool
+                    </button>
+                  )}
+                </div>
+              ) : success ? (
                 <div className="space-y-3 text-sm">
                   <p className="text-brand-300 font-medium">Pool deployed and funded</p>
                   <div>
@@ -842,6 +1132,84 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
                     <div>
                       <dt className="text-zinc-500">Supported assets</dt>
                       <dd className="text-white">{supportedAssetsLine}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-zinc-500">Initial contribution</dt>
+                      <dd className="mt-1">
+                        {initialFundSplitLoading || protocolFeeLoading ? (
+                          <span className="text-xs text-zinc-500" role="status">
+                            Reading the current protocol fee…
+                          </span>
+                        ) : initialFundSplit ? (
+                          <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+                            <div className="flex justify-between gap-4">
+                              <span className="text-zinc-400">Funding amount</span>
+                              <span className="text-white font-mono">
+                                {formatTokenAmount(
+                                  initialFundSplit.split.grossAmount,
+                                  initialFundSplit.decimals,
+                                )}{" "}
+                                {initialFundSplit.symbol}
+                              </span>
+                            </div>
+                            <div className="mt-1 flex justify-between gap-4">
+                              <span className="text-zinc-400">
+                                Protocol fee ({formatFeeBpsPercent(initialFundSplit.split.feeBps)})
+                              </span>
+                              <span className="text-white font-mono">
+                                {formatTokenAmount(
+                                  initialFundSplit.split.feeAmount,
+                                  initialFundSplit.decimals,
+                                )}{" "}
+                                {initialFundSplit.symbol}
+                              </span>
+                            </div>
+                            <div className="mt-1 flex justify-between gap-4">
+                              <span className="text-zinc-400">Pool receives</span>
+                              <span className="text-white font-mono">
+                                {formatTokenAmount(
+                                  initialFundSplit.split.netAmount,
+                                  initialFundSplit.decimals,
+                                )}{" "}
+                                {initialFundSplit.symbol}
+                              </span>
+                            </div>
+                            {preDeployFeeChanged && (
+                              <p className="mt-2 text-sm text-amber-400" role="alert">
+                                The protocol fee changed while you were reviewing. These are the
+                                updated amounts — press Deploy again to confirm them.
+                              </p>
+                            )}
+                            <p className="mt-2 text-xs text-zinc-500">
+                              Deploying also funds the pool, so this contribution happens right
+                              after the pool is created. The protocol fee comes out of the amount
+                              funded — it is not added on top. The rate is re-checked before the
+                              deployment prompt and again before the deposit prompt, so you are
+                              never asked to sign a rate you have not seen. It can still change
+                              between that last check and your transaction being mined, and can
+                              never exceed the 3% maximum.
+                            </p>
+                          </div>
+                        ) : (
+                          <div
+                            className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3"
+                            role="alert"
+                          >
+                            <p className="text-sm text-amber-400">
+                              Could not read the current protocol fee. Deployment is blocked until
+                              it can be read, so you are never asked to fund a new pool with
+                              unknown economics.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => void loadInitialFundSplit()}
+                              className="mt-2 rounded-lg bg-zinc-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                            >
+                              Retry
+                            </button>
+                          </div>
+                        )}
+                      </dd>
                     </div>
                     <div>
                       <dt className="text-zinc-500">Initial fund</dt>
@@ -919,7 +1287,13 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
           <button
             type="button"
             onClick={handleContinue}
-            disabled={step === 4 && !success && !partialFail && deploying}
+            disabled={
+              step === 4 &&
+              !success &&
+              !partialFail &&
+              (deploying || initialFundSplitLoading || protocolFeeLoading || !initialFundSplit) &&
+              !fundingPaused
+            }
             className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 focus:ring-offset-zinc-950 disabled:opacity-50 disabled:pointer-events-none"
           >
             {deploying ? "Working…" : primaryLabel}
