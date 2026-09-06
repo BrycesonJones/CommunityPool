@@ -2,6 +2,7 @@
 pragma solidity ^0.8.18;
 
 import {IProtocolConfig} from "./interfaces/IProtocolConfig.sol";
+import {ProtocolConstants} from "./ProtocolConstants.sol";
 
 error ProtocolConfig__NotAdmin();
 error ProtocolConfig__NotPendingAdmin();
@@ -26,11 +27,12 @@ error ProtocolConfig__FeeExceedsMaximum(uint256 requestedBps, uint256 maxBps);
 /// The contract has no payable functions, no receive/fallback, no delegatecall, no external
 /// calls of any kind, and no upgrade path.
 contract ProtocolConfig is IProtocolConfig {
-    /// @notice Basis-point denominator: 10_000 bps == 100%.
-    uint256 public constant BPS_DENOMINATOR = 10_000;
+    /// @notice Basis-point denominator: 10_000 bps == 100%. Shared with CommunityPool via
+    /// ProtocolConstants so the money-moving contract enforces the same policy defensively.
+    uint256 public constant BPS_DENOMINATOR = ProtocolConstants.BPS_DENOMINATOR;
 
     /// @notice Hard ceiling on the protocol fee for this contract version: 300 bps == 3%.
-    uint256 public constant MAX_PROTOCOL_FEE_BPS = 300;
+    uint256 public constant MAX_PROTOCOL_FEE_BPS = ProtocolConstants.MAX_PROTOCOL_FEE_BPS;
 
     /// @notice Account that may change configuration and propose its successor.
     address public admin;

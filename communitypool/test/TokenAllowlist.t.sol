@@ -2,7 +2,11 @@
 pragma solidity ^0.8.18;
 
 import {Test} from "forge-std/Test.sol";
-import {CommunityPool, CommunityPool__TokenNotWhitelisted} from "../src/CommunityPool.sol";
+import {
+    CommunityPool,
+    CommunityPool__TokenNotWhitelisted,
+    CommunityPool__UnsupportedTokenBehavior
+} from "../src/CommunityPool.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {MockV3Aggregator} from "./pricefeeds/V3Aggregator.sol";
 import {MockMintableERC20} from "./MockMintableERC20.sol";
@@ -51,7 +55,9 @@ contract TokenAllowlistTest is Test {
 
         address[] memory cos = new address[](0);
         // 5 USD minimum so 1 oz of PAXG ($2,000) and 1 oz of XAU₮ ($2,000) both clearly exceed it.
-        protocolConfig = new ProtocolConfig(makeAddr("protocolAdmin"), makeAddr("treasury"), 100);
+        // 0 bps: these suites pin V1-equivalent economics (100% retained). Fee-bearing paths are
+        // covered in ProtocolFeeFunding.t.sol and ProtocolConfigIntegration.t.sol.
+        protocolConfig = new ProtocolConfig(makeAddr("protocolAdmin"), makeAddr("treasury"), 0);
         pool = new CommunityPool(
             "Allowlist", "test", 5e18, cos, expiresAt, address(ethFeed), tks, address(protocolConfig)
         );
@@ -105,21 +111,19 @@ contract TokenAllowlistTest is Test {
 
     /// After a fee-on-transfer fund, the post-expiry release sweeps the actual on-chain balance
     /// (no per-funder credit ledger to diverge from balance).
-    function testReleaseAfterExpirySucceedsWithFeeOnTransferFunding() public {
+    /// @dev V2 candidate: exact-transfer accounting rejects a token that delivers less than the
+    /// requested amount, so a fee-on-transfer contribution reverts atomically instead of landing
+    /// a smaller-than-declared balance in the pool. (Pre-Phase-2.4 this test expected the
+    /// reduced balance to be accepted and later released.)
+    function testFeeOnTransferFundingIsRejectedByExactTransferAccounting() public {
         feeToken.setFeeBps(50); // 0.5%
-        uint256 requested = 2e18;
+        uint256 requested = 10e18;
         vm.startPrank(USER);
         feeToken.approve(address(pool), requested);
+        vm.expectRevert(CommunityPool__UnsupportedTokenBehavior.selector);
         pool.fundERC20(IERC20(address(feeToken)), requested);
         vm.stopPrank();
-
-        uint256 poolBal = feeToken.balanceOf(address(pool));
-        vm.warp(expiresAt + 1);
-        pool.releaseExpiredFundsToDeployer();
-
-        // Deployer is `this`; receives the actual pool balance (a second fee is taken on the way out).
-        assertEq(feeToken.balanceOf(address(pool)), 0);
-        uint256 expectedDeployerReceived = poolBal - (poolBal * 50) / 10_000;
-        assertEq(feeToken.balanceOf(address(this)), expectedDeployerReceived);
+        assertEq(feeToken.balanceOf(address(pool)), 0, "no partial contribution");
+        assertEq(feeToken.balanceOf(USER), 100e18, "funder untouched");
     }
 }

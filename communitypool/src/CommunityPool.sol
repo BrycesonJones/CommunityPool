@@ -4,8 +4,11 @@ pragma solidity ^0.8.18;
 import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {PriceConverter} from "./PriceConverter.sol";
 import {IProtocolConfig} from "./interfaces/IProtocolConfig.sol";
+import {ProtocolConstants} from "./ProtocolConstants.sol";
 
 error CommunityPool__NotOwner();
 error CommunityPool__PoolExpired();
@@ -20,6 +23,10 @@ error CommunityPool__InvalidWithdrawAmount();
 error CommunityPool__InsufficientBalance();
 error CommunityPool__EthTransferFailed();
 error CommunityPool__ProtocolConfigNotContract();
+error CommunityPool__ProtocolFeeExceedsMaximum(uint256 observedBps, uint256 maxBps);
+error CommunityPool__InvalidFeeRecipient();
+error CommunityPool__ProtocolFeeTransferFailed();
+error CommunityPool__UnsupportedTokenBehavior();
 
 /// @title CommunityPool
 /// @notice ETH + whitelisted ERC20 funding with USD minimums via Chainlink. Any owner may withdraw
@@ -28,16 +35,38 @@ error CommunityPool__ProtocolConfigNotContract();
 /// @dev Pool name, description, and per-funder accounting are not stored on-chain — consume
 /// `PoolCreated`, `Funded`, and `FundedERC20` events for those.
 ///
-/// Protocol configuration (V2 candidate): each pool holds an immutable reference to the shared
-/// `ProtocolConfig` for its chain and reads the current protocol fee rate and fee recipient from
-/// it on demand. Values are never snapshotted into the pool, so one admin change on the shared
-/// config is observed by every pool. In this contract version the configuration is READ ONLY:
-/// `fund` and `fundERC20` still retain 100% of every contribution and nothing is ever sent to
-/// the fee recipient. Fee collection is a later, separately reviewed change.
+/// Protocol fee (V2 candidate). Each pool holds an immutable reference to the shared
+/// `ProtocolConfig` for its chain and reads the current fee rate and fee recipient at
+/// transaction time; nothing is snapshotted into pool storage, so one admin change is observed
+/// by every pool. On every contribution:
+///
+///   grossAmount = amount the funder chose (msg.value, or the ERC-20 `grossAmount` argument)
+///   feeAmount   = floor(grossAmount * protocolFeeBps / 10_000)      (never rounded up)
+///   netAmount   = grossAmount - feeAmount                             (fee + net == gross)
+///
+///   feeAmount -> protocolConfig.feeRecipient()      netAmount -> stays in this pool
+///
+/// - The fee is deducted FROM the gross amount; a funder is never charged gross + fee, and the
+///   ERC-20 path never pulls more than `grossAmount` (an allowance of exactly `grossAmount`
+///   suffices).
+/// - `minimumUsd` is evaluated against the GROSS contribution, before the fee.
+/// - The fee is capped at ProtocolConstants.MAX_PROTOCOL_FEE_BPS (3%) here as well as in
+///   ProtocolConfig: an observed rate above the cap makes funding revert (fail closed).
+/// - A rounding result of feeAmount == 0 is valid and makes no transfer.
+/// - ETH fees are sent with a checked low-level call. A fee recipient that rejects ETH makes the
+///   whole contribution revert; funding is blocked until the protocol admin corrects the
+///   recipient. The fee is never silently skipped or retained.
+/// - ERC-20 assets must have exact transfer accounting: the pool must receive exactly
+///   `grossAmount` and the recipient exactly `feeAmount`, otherwise the contribution reverts
+///   (`CommunityPool__UnsupportedTokenBehavior`). Fee-on-transfer, rebasing, and similar
+///   tokens are unsupported in this contract version.
+/// - `fund`, `receive` and `fallback` are economically identical; ETH cannot bypass the fee.
 ///
 /// The ProtocolConfig admin has no authority here: it is not an owner, cannot withdraw, and
-/// cannot change expiry, minimums, owners, or the token allowlist.
-contract CommunityPool {
+/// cannot change expiry, minimums, owners, or the token allowlist. Fees go exclusively to the
+/// configured fee recipient, never to the admin, deployer, owners, or msg.sender unless one of
+/// them independently is the configured recipient.
+contract CommunityPool is ReentrancyGuard {
     using PriceConverter for uint256;
     using SafeERC20 for IERC20;
 
@@ -77,8 +106,21 @@ contract CommunityPool {
         address[] whitelistedTokens,
         address indexed protocolConfig
     );
-    event Funded(address indexed funder, uint256 amount);
-    event FundedERC20(address indexed token, address indexed funder, uint256 amount);
+    /// @notice Emitted after an ETH contribution and its protocol fee (if any) have settled.
+    /// `grossAmount == feeAmount + netAmount`. `feeRecipient` is address(0) when feeAmount == 0.
+    event Funded(
+        address indexed funder, address indexed feeRecipient, uint256 grossAmount, uint256 feeAmount, uint256 netAmount
+    );
+    /// @notice Emitted after an ERC-20 contribution and its protocol fee (if any) have settled.
+    /// `grossAmount == feeAmount + netAmount`. `feeRecipient` is address(0) when feeAmount == 0.
+    event FundedERC20(
+        address indexed token,
+        address indexed funder,
+        address indexed feeRecipient,
+        uint256 grossAmount,
+        uint256 feeAmount,
+        uint256 netAmount
+    );
     event Withdrawn(address indexed owner, uint256 amount);
     event WithdrawnToken(address indexed token, address indexed owner, uint256 amount);
 
@@ -180,31 +222,80 @@ contract CommunityPool {
     }
 
     /// @notice Current protocol fee parameters, read live from the shared ProtocolConfig.
-    /// @dev Informational in this contract version: no fee is deducted or transferred yet.
+    /// @dev These are the values a funding call would use if mined now; each funding call
+    /// re-reads them at execution time (one coherent snapshot per contribution).
     /// @return feeBps Protocol fee in basis points (10_000 bps == 100%).
-    /// @return recipient Address that will receive protocol fees once collection is enabled.
+    /// @return recipient Address that receives protocol fees.
     function getProtocolFeeConfig() external view returns (uint256 feeBps, address recipient) {
         feeBps = protocolConfig.protocolFeeBps();
         recipient = protocolConfig.feeRecipient();
     }
 
-    function fund() public payable notExpiredForFunding {
-        if (msg.value.getConversionRate(i_ethUsdFeed) < minimumUsd) {
+    /// @notice Contribute ETH. `msg.value` is the gross contribution; the protocol fee is
+    /// deducted from it and forwarded to the configured fee recipient, the remainder stays here.
+    /// @dev Order: expiry, gross USD minimum, one config snapshot, fee transfer, event. The pool
+    /// already holds `msg.value`, so sending only the fee out leaves exactly `netAmount`.
+    function fund() public payable nonReentrant notExpiredForFunding {
+        uint256 grossAmount = msg.value;
+        if (grossAmount.getConversionRate(i_ethUsdFeed) < minimumUsd) {
             revert CommunityPool__BelowMinimumUsd();
         }
-        emit Funded(msg.sender, msg.value);
+        (uint256 feeAmount, address recipient) = _protocolFeeFor(grossAmount);
+        if (feeAmount > 0) {
+            (bool ok,) = payable(recipient).call{value: feeAmount}("");
+            if (!ok) revert CommunityPool__ProtocolFeeTransferFailed();
+        }
+        emit Funded(msg.sender, recipient, grossAmount, feeAmount, grossAmount - feeAmount);
     }
 
-    function fundERC20(IERC20 token, uint256 amount) external notExpiredForFunding {
+    /// @notice Contribute a whitelisted ERC-20. `grossAmount` is the gross contribution and the
+    /// maximum ever pulled from the funder; the protocol fee is paid out of it.
+    /// @dev Order: whitelist, non-zero, gross USD minimum, one config snapshot, pull exactly
+    /// `grossAmount`, forward exactly `feeAmount`, verify both deltas, event. Any deviation
+    /// from exact-transfer accounting reverts the whole contribution.
+    function fundERC20(IERC20 token, uint256 grossAmount) external nonReentrant notExpiredForFunding {
         TokenInfo memory info = s_tokenInfo[address(token)];
         if (address(info.feed) == address(0)) revert CommunityPool__TokenNotWhitelisted();
-        if (amount == 0) revert CommunityPool__BelowMinimumUsd();
-        if (amount.getUsdValue(info.decimals, info.feed) < minimumUsd) {
+        if (grossAmount == 0) revert CommunityPool__BelowMinimumUsd();
+        if (grossAmount.getUsdValue(info.decimals, info.feed) < minimumUsd) {
             revert CommunityPool__BelowMinimumUsd();
         }
+        (uint256 feeAmount, address recipient) = _protocolFeeFor(grossAmount);
 
-        token.safeTransferFrom(msg.sender, address(this), amount);
-        emit FundedERC20(address(token), msg.sender, amount);
+        uint256 poolBefore = token.balanceOf(address(this));
+        token.safeTransferFrom(msg.sender, address(this), grossAmount);
+        uint256 poolAfterPull = token.balanceOf(address(this));
+        if (poolAfterPull < poolBefore || poolAfterPull - poolBefore != grossAmount) {
+            revert CommunityPool__UnsupportedTokenBehavior();
+        }
+
+        if (feeAmount > 0) {
+            uint256 recipientBefore = token.balanceOf(recipient);
+            token.safeTransfer(recipient, feeAmount);
+            if (
+                token.balanceOf(address(this)) != poolAfterPull - feeAmount
+                    || token.balanceOf(recipient) != recipientBefore + feeAmount
+            ) {
+                revert CommunityPool__UnsupportedTokenBehavior();
+            }
+        }
+
+        emit FundedERC20(address(token), msg.sender, recipient, grossAmount, feeAmount, grossAmount - feeAmount);
+    }
+
+    /// @dev One coherent fee snapshot for a single contribution. Reads the rate, enforces the
+    /// protocol cap defensively (the official ProtocolConfig already cannot exceed it), floors
+    /// the fee, and only when a fee is actually due reads and validates the recipient. A
+    /// reverting config call propagates and the contribution fails closed.
+    function _protocolFeeFor(uint256 grossAmount) internal view returns (uint256 feeAmount, address recipient) {
+        uint256 feeBps = protocolConfig.protocolFeeBps();
+        if (feeBps > ProtocolConstants.MAX_PROTOCOL_FEE_BPS) {
+            revert CommunityPool__ProtocolFeeExceedsMaximum(feeBps, ProtocolConstants.MAX_PROTOCOL_FEE_BPS);
+        }
+        feeAmount = Math.mulDiv(grossAmount, feeBps, ProtocolConstants.BPS_DENOMINATOR);
+        if (feeAmount == 0) return (0, address(0));
+        recipient = protocolConfig.feeRecipient();
+        if (recipient == address(0) || recipient == address(this)) revert CommunityPool__InvalidFeeRecipient();
     }
 
     /// @notice Partial ETH owner withdraw before expiry.
