@@ -98,29 +98,39 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
-      - name: Install Foundry
+      - name: Install Foundry (pinned)
         uses: foundry-rs/foundry-toolchain@v1
         with:
-          version: stable
+          # Pinned, not "stable": the Foundry version selects compiler defaults
+          # and remapping discovery. foundry.toml pins the settings that matter,
+          # but the toolchain is pinned too so artifact drift can never be
+          # introduced by a silent Foundry release. Bump deliberately together
+          # with docs/contracts-build.md.
+          version: v1.8.1
 
-      - name: Print Foundry version
-        run: forge --version
+      - name: Print toolchain
+        run: |
+          forge --version
+          git submodule status --recursive
 
-      - name: Forge build
-        run: forge build --sizes
+      - name: Forge clean build (canonical)
+        run: |
+          forge clean
+          forge build --sizes
 
       - name: Forge tests
         run: forge test -vvv
 
-      - name: Sync contract artifact (Next.js runtime ABI/bytecode)
-        run: |
-          # Project script regenerates lib/onchain/community-pool-artifact.json
-          # from forge-out/. The check mode below verifies it matches what's
-          # committed (or what was just generated, in this CI run).
-          node scripts/sync-contract-artifact.mjs
+      - name: Regenerate contract artifact from the clean build
+        run: node scripts/sync-contract-artifact.mjs
 
-      - name: Verify committed contract artifact matches forge-out
-        run: node scripts/sync-contract-artifact.mjs --check
+      - name: Artifact integrity gate (committed artifact must equal the clean build)
+        run: |
+          # Independent stale-artifact check: compare the regenerated file
+          # against what was committed at this SHA. Fails if CommunityPool.sol,
+          # a dependency, or the canonical build configuration changed without
+          # the artifact being regenerated and reviewed.
+          git diff --exit-code -- lib/onchain/community-pool-artifact.json
 
   ci-summary:
     name: CI summary

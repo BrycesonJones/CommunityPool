@@ -1,11 +1,30 @@
+# Canonical CommunityPool build configuration (Phase 2.0).
+#
+# Every setting that influences compiler output or the metadata hash embedded
+# in the bytecode is pinned explicitly so a clean checkout on any machine (and
+# CI) reproduces lib/onchain/community-pool-artifact.json byte-for-byte:
+#   - solc is pinned and auto-detection is off (pragma ^0.8.18 must not float)
+#   - evm_version is pinned (cancun is solc 0.8.26's default; pinned so a
+#     Foundry default change can never alter codegen)
+#   - remappings are explicit only; auto-detected remappings depend on which
+#     lib/ sub-directories happen to exist on disk and change the metadata
+#     hash (this is what made V1 builds non-reproducible)
+#   - bytecode_hash / cbor_metadata are stated so the CBOR trailer is stable
+# scripts/sync-contract-artifact.mjs asserts these against forge-out metadata.
 [profile.default]
 src = "src"
 test = "test"
 out = "forge-out"
 libs = ["lib"]
 solc_version = "0.8.26"
+auto_detect_solc = false
+evm_version = "cancun"
+via_ir = false
 optimizer = true
 optimizer_runs = 200
+bytecode_hash = "ipfs"
+cbor_metadata = true
+auto_detect_remappings = false
 remappings = [
     "@chainlink/contracts/=lib/chainlink-brownie-contracts/contracts/",
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
