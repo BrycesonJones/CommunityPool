@@ -63,7 +63,8 @@ describe.skipIf(!run)("anvil: V2 candidate protocol-fee collection (ephemeral, n
       [],
       expiresAt,
       await ethFeed.getAddress(),
-      [{ token: await wbtc.getAddress(), usdFeed: await wbtcFeed.getAddress(), decimals: 8 }],
+      3600n, // ethUsdMaxPriceAge — the mock feed is fresh at deploy time
+      [{ token: await wbtc.getAddress(), usdFeed: await wbtcFeed.getAddress(), decimals: 8, maxPriceAge: 3600n }],
       await config.getAddress(),
     );
     await pool.waitForDeployment();

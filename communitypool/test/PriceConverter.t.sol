@@ -15,9 +15,13 @@ contract PriceConverterTest is Test {
         harness = new PriceConverterHarness();
     }
 
-    /// @dev 1 ETH at $2000/ETH → 2000 USD in 18-decimal fixed point.
+    /// @dev 1 ETH at $2000/ETH -> 2000 USD in 18-decimal fixed point (8-decimal feed, fresh round).
     function testOneEthAt2000Usd() public view {
-        uint256 usd = harness.conversionRate(1 ether, AggregatorV3Interface(address(feed)));
+        uint256 usd = harness.conversionRate(1 ether, AggregatorV3Interface(address(feed)), 8, 1 hours);
         assertEq(usd, 2000e18);
+    }
+
+    function testFeedDecimalsReadFromFeed() public view {
+        assertEq(harness.readFeedDecimals(AggregatorV3Interface(address(feed))), 8);
     }
 }

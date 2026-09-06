@@ -40,6 +40,8 @@ contract ProtocolConfigIntegrationTest is Test {
     uint256 internal constant INITIAL_FEE_BPS = 100; // 1% represented as configuration only
 
     ProtocolConfig internal config;
+    /// @dev Oracle max age for fixtures: generous so time-travel tests exercise expiry, not staleness.
+    uint32 internal constant ORACLE_MAX_AGE = 365 days;
     MockV3Aggregator internal ethFeed;
     MockV3Aggregator internal tokenFeed;
     MockMintableERC20 internal token;
@@ -66,12 +68,16 @@ contract ProtocolConfigIntegrationTest is Test {
 
     function _tokenConfigs() internal view returns (CommunityPool.TokenConfig[] memory tks) {
         tks = new CommunityPool.TokenConfig[](1);
-        tks[0] = CommunityPool.TokenConfig({token: address(token), usdFeed: address(tokenFeed), decimals: 8});
+        tks[0] = CommunityPool.TokenConfig({
+            token: address(token), usdFeed: address(tokenFeed), decimals: 8, maxPriceAge: ORACLE_MAX_AGE
+        });
     }
 
     function _deployPool(string memory name) internal returns (CommunityPool) {
         address[] memory cos = new address[](0);
-        return new CommunityPool(name, "desc", 5e18, cos, expiresAt, address(ethFeed), _tokenConfigs(), address(config));
+        return new CommunityPool(
+            name, "desc", 5e18, cos, expiresAt, address(ethFeed), ORACLE_MAX_AGE, _tokenConfigs(), address(config)
+        );
     }
 
     // ------------------------------------------------------------------ constructor binding
@@ -84,7 +90,7 @@ contract ProtocolConfigIntegrationTest is Test {
     function testConstructorRejectsZeroConfig() public {
         address[] memory cos = new address[](0);
         vm.expectRevert(CommunityPool__ZeroAddress.selector);
-        new CommunityPool("Z", "d", 5e18, cos, expiresAt, address(ethFeed), _tokenConfigs(), address(0));
+        new CommunityPool("Z", "d", 5e18, cos, expiresAt, address(ethFeed), ORACLE_MAX_AGE, _tokenConfigs(), address(0));
     }
 
     function testConstructorRejectsConfigWithoutCode() public {
@@ -92,7 +98,7 @@ contract ProtocolConfigIntegrationTest is Test {
         address eoa = makeAddr("notAContract");
         assertEq(eoa.code.length, 0);
         vm.expectRevert(CommunityPool__ProtocolConfigNotContract.selector);
-        new CommunityPool("E", "d", 5e18, cos, expiresAt, address(ethFeed), _tokenConfigs(), eoa);
+        new CommunityPool("E", "d", 5e18, cos, expiresAt, address(ethFeed), ORACLE_MAX_AGE, _tokenConfigs(), eoa);
     }
 
     function testPoolCreatedEventCarriesConfigAddress() public {
@@ -102,7 +108,9 @@ contract ProtocolConfigIntegrationTest is Test {
         vm.prank(poolDeployer);
         vm.expectEmit(true, true, false, true);
         emit PoolCreated(poolDeployer, "Gamma", "desc", 5e18, expiresAt, cos, toks, address(config));
-        new CommunityPool("Gamma", "desc", 5e18, cos, expiresAt, address(ethFeed), _tokenConfigs(), address(config));
+        new CommunityPool(
+            "Gamma", "desc", 5e18, cos, expiresAt, address(ethFeed), ORACLE_MAX_AGE, _tokenConfigs(), address(config)
+        );
     }
 
     // ------------------------------------------------------------------ shared dynamic reads
@@ -261,8 +269,9 @@ contract ProtocolConfigIntegrationTest is Test {
         address[] memory cos = new address[](1);
         cos[0] = protocolAdmin;
         vm.prank(poolDeployer);
-        CommunityPool consenting =
-            new CommunityPool("Consent", "d", 5e18, cos, expiresAt, address(ethFeed), _tokenConfigs(), address(config));
+        CommunityPool consenting = new CommunityPool(
+            "Consent", "d", 5e18, cos, expiresAt, address(ethFeed), ORACLE_MAX_AGE, _tokenConfigs(), address(config)
+        );
         assertTrue(consenting.isOwner(protocolAdmin));
         // ...and that grant does not leak to the other pools sharing the same config.
         assertFalse(poolA.isOwner(protocolAdmin));

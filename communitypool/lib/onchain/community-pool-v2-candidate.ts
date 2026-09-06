@@ -28,7 +28,9 @@ export type CommunityPoolV2ConstructorArgs = {
   /** Unix seconds. */
   expiresAt: bigint;
   ethUsdFeed: string;
-  tokenConfigs: Array<{ token: string; usdFeed: string; decimals: number }>;
+  /** Immutable maximum accepted age (seconds) of the ETH/USD price; must be > 0. */
+  ethUsdMaxPriceAge: number;
+  tokenConfigs: Array<{ token: string; usdFeed: string; decimals: number; maxPriceAge: number }>;
   /** Address of the chain's official ProtocolConfig deployment. Must have code. */
   protocolConfig: string;
 };

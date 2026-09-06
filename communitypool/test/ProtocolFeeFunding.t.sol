@@ -54,6 +54,8 @@ contract ProtocolFeeFundingTest is Test {
     address internal funder = makeAddr("funder");
 
     ProtocolConfig internal config;
+    /// @dev Oracle max age for fixtures: generous so time-travel tests exercise expiry, not staleness.
+    uint32 internal constant ORACLE_MAX_AGE = 365 days;
     MockV3Aggregator internal ethFeed;
     MockV3Aggregator internal wbtcFeed;
     MockV3Aggregator internal paxgFeed;
@@ -88,9 +90,17 @@ contract ProtocolFeeFundingTest is Test {
     {
         uint256 n = extraToken == address(0) ? 2 : 3;
         tks = new CommunityPool.TokenConfig[](n);
-        tks[0] = CommunityPool.TokenConfig({token: address(wbtc), usdFeed: address(wbtcFeed), decimals: 8});
-        tks[1] = CommunityPool.TokenConfig({token: address(paxg), usdFeed: address(paxgFeed), decimals: 18});
-        if (n == 3) tks[2] = CommunityPool.TokenConfig({token: extraToken, usdFeed: extraFeed, decimals: extraDec});
+        tks[0] = CommunityPool.TokenConfig({
+            token: address(wbtc), usdFeed: address(wbtcFeed), decimals: 8, maxPriceAge: ORACLE_MAX_AGE
+        });
+        tks[1] = CommunityPool.TokenConfig({
+            token: address(paxg), usdFeed: address(paxgFeed), decimals: 18, maxPriceAge: ORACLE_MAX_AGE
+        });
+        if (n == 3) {
+            tks[2] = CommunityPool.TokenConfig({
+                token: extraToken, usdFeed: extraFeed, decimals: extraDec, maxPriceAge: ORACLE_MAX_AGE
+            });
+        }
     }
 
     function _deployPool(address cfg) internal returns (CommunityPool) {
@@ -100,10 +110,9 @@ contract ProtocolFeeFundingTest is Test {
     function _deployPoolWithToken(address cfg, address tok, address feed, uint8 dec) internal returns (CommunityPool) {
         address[] memory cos = new address[](0);
         vm.prank(poolDeployer);
-        return
-            new CommunityPool(
-                "Fee", "desc", MIN_USD, cos, expiresAt, address(ethFeed), _tokenConfigs(tok, feed, dec), cfg
-            );
+        return new CommunityPool(
+            "Fee", "desc", MIN_USD, cos, expiresAt, address(ethFeed), ORACLE_MAX_AGE, _tokenConfigs(tok, feed, dec), cfg
+        );
     }
 
     function _setFee(uint256 bps) internal {

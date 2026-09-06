@@ -17,6 +17,19 @@ contract DeployCommunityPool is Script {
     // XAU / USD per troy ounce — XAU₮ is 1 token == 1 troy ounce.
     address internal constant MAINNET_XAU_USD_FEED = 0x214eD9Da11D2fbe465a6fc601a91E62EbEc1a0D6;
 
+    // Immutable per-feed maximum accepted price age (seconds). Values verified against Chainlink's
+    // reference data and on-chain aggregator reads on 2026-09-06; rationale and evidence in
+    // docs/deployment/phase-2-7-mainnet-canary.md. Policy: 2x the documented heartbeat, so one
+    // delayed round is tolerated while multi-heartbeat-old data is rejected.
+    //   ETH/USD  heartbeat 3600  -> 7200
+    //   BTC/USD  heartbeat 3600  -> 7200   (WBTC is priced via BTC/USD; no WBTC/USD feed exists)
+    //   PAXG/USD heartbeat 86400 -> 172800
+    //   XAU/USD  heartbeat 86400 -> 259200 (market-hours feed: weekend/holiday gaps exceed 2x)
+    uint32 internal constant MAINNET_ETH_USD_MAX_AGE = 7_200;
+    uint32 internal constant MAINNET_BTC_USD_MAX_AGE = 7_200;
+    uint32 internal constant MAINNET_PAXG_USD_MAX_AGE = 172_800;
+    uint32 internal constant MAINNET_XAU_USD_MAX_AGE = 259_200;
+
     function run() external returns (CommunityPool) {
         HelperConfig helperConfig = new HelperConfig();
         (address ethUsdFeed) = helperConfig.activeNetworkConfig();
@@ -27,14 +40,16 @@ contract DeployCommunityPool is Script {
         uint64 expiresAt = uint64(vm.envOr("POOL_EXPIRES_AT", uint256(block.timestamp + 365 days)));
 
         address[] memory coOwners = new address[](0);
+        uint32 ethMaxAge = _ethUsdMaxPriceAge();
 
         CommunityPool.TokenConfig[] memory tokenConfigs = _defaultTokenConfigs();
 
         address protocolConfig = _resolveProtocolConfig();
 
         vm.startBroadcast();
-        CommunityPool pool =
-            new CommunityPool(name, description, minUsd, coOwners, expiresAt, ethUsdFeed, tokenConfigs, protocolConfig);
+        CommunityPool pool = new CommunityPool(
+            name, description, minUsd, coOwners, expiresAt, ethUsdFeed, ethMaxAge, tokenConfigs, protocolConfig
+        );
         vm.stopBroadcast();
         console.log("CommunityPool deployed at:", address(pool));
         return pool;
@@ -64,12 +79,26 @@ contract DeployCommunityPool is Script {
         return address(fixture);
     }
 
+    /// @dev Mainnet: verified constant. Sepolia: must be supplied explicitly (no placeholder).
+    /// Local chains: 1 day unless overridden; the mock feed is fresh at deploy time.
+    function _ethUsdMaxPriceAge() internal view returns (uint32) {
+        if (block.chainid == 1) return MAINNET_ETH_USD_MAX_AGE;
+        if (block.chainid == 11155111) return uint32(vm.envUint("SEPOLIA_ETH_USD_MAX_AGE"));
+        return uint32(vm.envOr("POOL_ETH_USD_MAX_AGE", uint256(1 days)));
+    }
+
     function _defaultTokenConfigs() internal view returns (CommunityPool.TokenConfig[] memory) {
         if (block.chainid == 1) {
             CommunityPool.TokenConfig[] memory c = new CommunityPool.TokenConfig[](3);
-            c[0] = CommunityPool.TokenConfig({token: MAINNET_WBTC, usdFeed: MAINNET_WBTC_USD_FEED, decimals: 8});
-            c[1] = CommunityPool.TokenConfig({token: MAINNET_PAXG, usdFeed: MAINNET_PAXG_USD_FEED, decimals: 18});
-            c[2] = CommunityPool.TokenConfig({token: MAINNET_XAUT, usdFeed: MAINNET_XAU_USD_FEED, decimals: 6});
+            c[0] = CommunityPool.TokenConfig({
+                token: MAINNET_WBTC, usdFeed: MAINNET_WBTC_USD_FEED, decimals: 8, maxPriceAge: MAINNET_BTC_USD_MAX_AGE
+            });
+            c[1] = CommunityPool.TokenConfig({
+                token: MAINNET_PAXG, usdFeed: MAINNET_PAXG_USD_FEED, decimals: 18, maxPriceAge: MAINNET_PAXG_USD_MAX_AGE
+            });
+            c[2] = CommunityPool.TokenConfig({
+                token: MAINNET_XAUT, usdFeed: MAINNET_XAU_USD_FEED, decimals: 6, maxPriceAge: MAINNET_XAU_USD_MAX_AGE
+            });
             return c;
         }
         if (block.chainid == 11155111) {
@@ -84,6 +113,8 @@ contract DeployCommunityPool is Script {
             address xautTok = vm.envOr("SEPOLIA_XAUT_TOKEN", address(0));
             address xautFeed = vm.envOr("SEPOLIA_XAUT_USD_FEED", address(0));
             uint8 xautDec = uint8(vm.envOr("SEPOLIA_XAUT_DECIMALS", uint256(6)));
+            // Sepolia feeds have looser heartbeats than mainnet; require an explicit value.
+            uint32 tokenMaxAge = uint32(vm.envUint("SEPOLIA_TOKEN_USD_MAX_AGE"));
 
             uint256 n = 0;
             if (wbtcTok != address(0) && wbtcFeed != address(0)) n++;
@@ -93,13 +124,19 @@ contract DeployCommunityPool is Script {
             CommunityPool.TokenConfig[] memory c = new CommunityPool.TokenConfig[](n);
             uint256 i = 0;
             if (wbtcTok != address(0) && wbtcFeed != address(0)) {
-                c[i++] = CommunityPool.TokenConfig({token: wbtcTok, usdFeed: wbtcFeed, decimals: wbtcDec});
+                c[i++] = CommunityPool.TokenConfig({
+                    token: wbtcTok, usdFeed: wbtcFeed, decimals: wbtcDec, maxPriceAge: tokenMaxAge
+                });
             }
             if (paxgTok != address(0) && paxgFeed != address(0)) {
-                c[i++] = CommunityPool.TokenConfig({token: paxgTok, usdFeed: paxgFeed, decimals: paxgDec});
+                c[i++] = CommunityPool.TokenConfig({
+                    token: paxgTok, usdFeed: paxgFeed, decimals: paxgDec, maxPriceAge: tokenMaxAge
+                });
             }
             if (xautTok != address(0) && xautFeed != address(0)) {
-                c[i++] = CommunityPool.TokenConfig({token: xautTok, usdFeed: xautFeed, decimals: xautDec});
+                c[i++] = CommunityPool.TokenConfig({
+                    token: xautTok, usdFeed: xautFeed, decimals: xautDec, maxPriceAge: tokenMaxAge
+                });
             }
             return c;
         }
@@ -110,7 +147,8 @@ contract DeployCommunityPool is Script {
             one[0] = CommunityPool.TokenConfig({
                 token: legacyTok,
                 usdFeed: vm.envAddress("POOL_TOKEN_USD_FEED"),
-                decimals: uint8(vm.envOr("POOL_TOKEN_DECIMALS", uint256(18)))
+                decimals: uint8(vm.envOr("POOL_TOKEN_DECIMALS", uint256(18))),
+                maxPriceAge: uint32(vm.envOr("POOL_TOKEN_USD_MAX_AGE", uint256(1 days)))
             });
             return one;
         }

@@ -46,6 +46,8 @@ abstract contract FeeSecurityBase is Test {
     address internal attacker = makeAddr("attacker");
 
     ProtocolConfig internal config;
+    /// @dev Oracle max age for fixtures: generous so time-travel tests exercise expiry, not staleness.
+    uint32 internal constant ORACLE_MAX_AGE = 365 days;
     MockV3Aggregator internal ethFeed;
     MockV3Aggregator internal wbtcFeed;
     MockV3Aggregator internal paxgFeed;
@@ -83,8 +85,12 @@ abstract contract FeeSecurityBase is Test {
 
     function _tokenConfigs() internal view returns (CommunityPool.TokenConfig[] memory tks) {
         tks = new CommunityPool.TokenConfig[](2);
-        tks[0] = CommunityPool.TokenConfig({token: address(wbtc), usdFeed: address(wbtcFeed), decimals: 8});
-        tks[1] = CommunityPool.TokenConfig({token: address(paxg), usdFeed: address(paxgFeed), decimals: 18});
+        tks[0] = CommunityPool.TokenConfig({
+            token: address(wbtc), usdFeed: address(wbtcFeed), decimals: 8, maxPriceAge: ORACLE_MAX_AGE
+        });
+        tks[1] = CommunityPool.TokenConfig({
+            token: address(paxg), usdFeed: address(paxgFeed), decimals: 18, maxPriceAge: ORACLE_MAX_AGE
+        });
     }
 
     function _newPool(address deployer, address[] memory cos, address cfg, uint256 minUsd, uint64 exp)
@@ -92,7 +98,7 @@ abstract contract FeeSecurityBase is Test {
         returns (CommunityPool p)
     {
         vm.prank(deployer);
-        p = new CommunityPool("Sec", "d", minUsd, cos, exp, address(ethFeed), _tokenConfigs(), cfg);
+        p = new CommunityPool("Sec", "d", minUsd, cos, exp, address(ethFeed), ORACLE_MAX_AGE, _tokenConfigs(), cfg);
     }
 
     function _newPoolWithExtraToken(address deployer, address cfg, address tok, address feed, uint8 dec)
@@ -100,12 +106,16 @@ abstract contract FeeSecurityBase is Test {
         returns (CommunityPool p)
     {
         CommunityPool.TokenConfig[] memory tks = new CommunityPool.TokenConfig[](3);
-        tks[0] = CommunityPool.TokenConfig({token: address(wbtc), usdFeed: address(wbtcFeed), decimals: 8});
-        tks[1] = CommunityPool.TokenConfig({token: address(paxg), usdFeed: address(paxgFeed), decimals: 18});
-        tks[2] = CommunityPool.TokenConfig({token: tok, usdFeed: feed, decimals: dec});
+        tks[0] = CommunityPool.TokenConfig({
+            token: address(wbtc), usdFeed: address(wbtcFeed), decimals: 8, maxPriceAge: ORACLE_MAX_AGE
+        });
+        tks[1] = CommunityPool.TokenConfig({
+            token: address(paxg), usdFeed: address(paxgFeed), decimals: 18, maxPriceAge: ORACLE_MAX_AGE
+        });
+        tks[2] = CommunityPool.TokenConfig({token: tok, usdFeed: feed, decimals: dec, maxPriceAge: ORACLE_MAX_AGE});
         address[] memory cos = new address[](0);
         vm.prank(deployer);
-        p = new CommunityPool("Sec", "d", MIN_USD, cos, expiresAt, address(ethFeed), tks, cfg);
+        p = new CommunityPool("Sec", "d", MIN_USD, cos, expiresAt, address(ethFeed), ORACLE_MAX_AGE, tks, cfg);
     }
 
     function _setFee(uint256 bps) internal {

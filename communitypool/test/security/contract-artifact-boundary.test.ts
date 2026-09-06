@@ -75,19 +75,59 @@ describe("V2 candidate artifacts (not activated)", () => {
   const v2 = read("lib/onchain/community-pool-v2-candidate-artifact.json");
   const cfg = read("lib/onchain/protocol-config-candidate-artifact.json");
 
-  it("V2 constructor takes the ProtocolConfig address as its 8th argument", () => {
+  it("V2 constructor takes ethUsdMaxPriceAge (7th) and the ProtocolConfig address (9th)", () => {
     const iface = new Interface(v2.abi);
     const inputs = iface.deploy.inputs.map((i) => i.type);
-    expect(inputs).toEqual(["string", "string", "uint256", "address[]", "uint64", "address", "tuple[]", "address"]);
-    expect(iface.deploy.inputs[7].name).toBe("protocolConfig_");
+    expect(inputs).toEqual([
+      "string",
+      "string",
+      "uint256",
+      "address[]",
+      "uint64",
+      "address",
+      "uint32",
+      "tuple[]",
+      "address",
+    ]);
+    expect(iface.deploy.inputs[6].name).toBe("ethUsdMaxPriceAge");
+    expect(iface.deploy.inputs[8].name).toBe("protocolConfig_");
+    const tokenConfig = iface.deploy.inputs[7].arrayChildren!;
+    expect(tokenConfig.components!.map((c) => c.name)).toEqual(["token", "usdFeed", "decimals", "maxPriceAge"]);
   });
 
   it("V2 exposes the live config read and the immutable reference; V1 does not", () => {
     const v1 = read("lib/onchain/community-pool-v1-artifact.json");
     const names = (a: Array<{ type: string; name?: string }>) => a.filter((x) => x.type === "function").map((x) => x.name);
-    expect(names(v2.abi)).toEqual(expect.arrayContaining(["getProtocolFeeConfig", "protocolConfig"]));
+    expect(names(v2.abi)).toEqual(
+      expect.arrayContaining(["getProtocolFeeConfig", "protocolConfig", "getEthUsdFeed", "getTokenInfo"]),
+    );
     expect(names(v1.abi)).not.toContain("getProtocolFeeConfig");
     expect(names(v1.abi)).not.toContain("protocolConfig");
+  });
+
+  it("oracle thresholds are immutable: no setter on V2, no oracle authority on ProtocolConfig", () => {
+    const fns = (a: Array<{ type: string; name?: string }>) =>
+      a.filter((x) => x.type === "function").map((x) => x.name ?? "");
+    const oracleish = /price|oracle|feed|age|decimal/i;
+    // V2 exposes only read views for its oracle configuration.
+    for (const fn of fns(v2.abi)) {
+      if (oracleish.test(fn)) expect(["getEthUsdFeed", "getTokenInfo", "getProtocolFeeConfig"]).toContain(fn);
+    }
+    expect(fns(v2.abi).some((fn) => /^set/i.test(fn))).toBe(false);
+    // ProtocolConfig gained no oracle-related function in Phase 2.6.
+    for (const fn of fns(cfg.abi)) expect(oracleish.test(fn.replace("feeRecipient", "").replace("FeeRecipient", ""))).toBe(false);
+    // The typed oracle errors are part of the V2 ABI (consumers can decode them).
+    const errors = v2.abi.filter((x: { type: string }) => x.type === "error").map((x: { name: string }) => x.name);
+    expect(errors).toEqual(
+      expect.arrayContaining([
+        "PriceConverter__InvalidPrice",
+        "PriceConverter__IncompleteRound",
+        "PriceConverter__FutureTimestamp",
+        "PriceConverter__StalePrice",
+        "PriceConverter__UnsupportedFeedDecimals",
+        "PriceConverter__InvalidMaxPriceAge",
+      ]),
+    );
   });
 
   it("V2 keeps every V1 pool function (no withdrawal/funding surface removed)", () => {
