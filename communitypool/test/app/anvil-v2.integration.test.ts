@@ -18,7 +18,7 @@ import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { Contract, ContractFactory, JsonRpcProvider, Wallet, parseEther, parseUnits, type Log, type LogDescription } from "ethers";
-import { COMMUNITY_POOL_V2_CANDIDATE_ARTIFACT, PROTOCOL_CONFIG_CANDIDATE_ARTIFACT } from "@/lib/onchain/community-pool-v2-candidate";
+import { COMMUNITY_POOL_V2_ARTIFACT, PROTOCOL_CONFIG_ARTIFACT } from "@/lib/onchain/community-pool-v2";
 
 const RPC = process.env.ANVIL_RPC_URL?.trim();
 const run = Boolean(RPC) && process.env.ANVIL_V2_CANDIDATE === "1";
@@ -50,11 +50,11 @@ describe.skipIf(!run)("anvil: V2 candidate protocol-fee collection (ephemeral, n
     const wbtc = await new ContractFactory(tokenArt.abi, tokenArt.bytecode, admin).deploy("Wrapped BTC", "WBTC", 8);
     await wbtc.waitForDeployment();
 
-    const cfgFactory = new ContractFactory(PROTOCOL_CONFIG_CANDIDATE_ARTIFACT.abi, PROTOCOL_CONFIG_CANDIDATE_ARTIFACT.bytecode, admin);
+    const cfgFactory = new ContractFactory(PROTOCOL_CONFIG_ARTIFACT.abi, PROTOCOL_CONFIG_ARTIFACT.bytecode, admin);
     const config = await cfgFactory.deploy(admin.address, treasury.address, 100n);
     await config.waitForDeployment();
 
-    const poolFactory = new ContractFactory(COMMUNITY_POOL_V2_CANDIDATE_ARTIFACT.abi, COMMUNITY_POOL_V2_CANDIDATE_ARTIFACT.bytecode, admin);
+    const poolFactory = new ContractFactory(COMMUNITY_POOL_V2_ARTIFACT.abi, COMMUNITY_POOL_V2_ARTIFACT.bytecode, admin);
     const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 30 * 86400);
     const pool = await poolFactory.deploy(
       "V2 Candidate",
@@ -69,8 +69,8 @@ describe.skipIf(!run)("anvil: V2 candidate protocol-fee collection (ephemeral, n
     );
     await pool.waitForDeployment();
     const poolAddr = await pool.getAddress();
-    const poolC = new Contract(poolAddr, COMMUNITY_POOL_V2_CANDIDATE_ARTIFACT.abi, admin);
-    const configC = new Contract(await config.getAddress(), PROTOCOL_CONFIG_CANDIDATE_ARTIFACT.abi, admin);
+    const poolC = new Contract(poolAddr, COMMUNITY_POOL_V2_ARTIFACT.abi, admin);
+    const configC = new Contract(await config.getAddress(), PROTOCOL_CONFIG_ARTIFACT.abi, admin);
     const wbtcC = new Contract(await wbtc.getAddress(), tokenArt.abi, admin);
 
     // ETH 1%

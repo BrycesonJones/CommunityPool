@@ -150,10 +150,14 @@ pool. There is deliberately no `renounceAdmin`.
 ## Constructor and deployment values
 
 `ProtocolConfig(admin_, feeRecipient_, initialProtocolFeeBps_)`; all validated
-(non-zero addresses, fee ≤ 300). The intended mainnet values (admin, treasury,
-100 bps) are deployment-time parameters for a later phase. They are not
-hardcoded in any contract, script, or frontend module, and the artifact
-boundary test asserts that they are absent from production code.
+(non-zero addresses, fee ≤ 300). The mainnet instance was deployed in the
+Phase 2.7 canary at `0x2eD7F089a6C2971B24eA91121aD65f9242F622c0` with the fee
+at 100 bps. Its admin and treasury addresses are contract state, deliberately
+not mirrored anywhere in this repository: the app never needs them, pools read
+the live values on every contribution, and the artifact boundary test asserts
+those two addresses appear nowhere in production code. The config address
+itself is a constant in `lib/onchain/pool-chain-config.ts` — every mainnet V2
+pool points at that one instance, and it is never a user-editable field.
 
 `script/DeployCommunityPool.s.sol` requires `PROTOCOL_CONFIG_ADDRESS` on
 mainnet and Sepolia (an address with code) and refuses to run without it. On a

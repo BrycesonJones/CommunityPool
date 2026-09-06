@@ -1,12 +1,11 @@
 /**
  * V1 / V2 contract artifact boundary.
  *
- * Production deploys CommunityPools from the FROZEN V1 artifact. The V2
- * candidate (ProtocolConfig-aware constructor) and the ProtocolConfig
- * candidate are generated from source but must not be wired into the
- * production deploy path until an explicit activation phase. These tests fail
- * if the frozen artifact drifts, if the deploy helper switches artifacts, or
- * if the candidate artifacts lose the shape a future activation relies on.
+ * Since Phase 2.8 new pools deploy the V2 artifact. The frozen V1 artifact must still never
+ * change — existing V1 pools are live user contracts and the app keeps its ABI to read and
+ * interact with them — but it must never be deployed again. These tests fail if the frozen
+ * artifact drifts, if the deploy path stops using V2 or starts re-deploying V1, or if the V2
+ * artifact loses the shape the funding UI and the mainnet canary rely on.
  */
 
 import { describe, it, expect } from "vitest";
@@ -31,26 +30,13 @@ describe("frozen V1 production artifact", () => {
     );
   });
 
-  it("is the artifact the production deploy helper imports", () => {
+  it("is kept for interacting with existing V1 pools but is never deployed again", () => {
     const helper = fs.readFileSync(path.join(repoRoot, "lib/onchain/community-pool.ts"), "utf8");
+    // Still imported: existing V1 pools are live contracts the app must read and drive.
     expect(helper).toMatch(/from\s+"\.\/community-pool-v1-artifact\.json"/);
-    // Only actual module references count; prose comments may mention the candidate.
-    expect(helper).not.toMatch(/candidate-artifact\.json|community-pool-v2-candidate"/);
-    // No other production module reaches for a candidate artifact either.
-    const prodDirs = ["app", "components", "lib"];
-    const offenders: string[] = [];
-    const walk = (dir: string) => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, e.name);
-        if (e.isDirectory()) walk(full);
-        else if (/\.(ts|tsx)$/.test(e.name) && !full.endsWith("community-pool-v2-candidate.ts")) {
-          const src = fs.readFileSync(full, "utf8");
-          if (/candidate-artifact\.json|community-pool-v2-candidate"/.test(src)) offenders.push(path.relative(repoRoot, full));
-        }
-      }
-    };
-    prodDirs.forEach((d) => walk(path.join(repoRoot, d)));
-    expect(offenders).toEqual([]);
+    // New deployments use V2 only.
+    expect(helper).toMatch(/COMMUNITY_POOL_V2_ARTIFACT\.bytecode/);
+    expect(helper).not.toMatch(/new ContractFactory\(\s*artifact\.abi/);
   });
 
   it("does not mention the intended mainnet admin/treasury addresses anywhere in production code", () => {
@@ -72,8 +58,8 @@ describe("frozen V1 production artifact", () => {
 });
 
 describe("V2 candidate artifacts (not activated)", () => {
-  const v2 = read("lib/onchain/community-pool-v2-candidate-artifact.json");
-  const cfg = read("lib/onchain/protocol-config-candidate-artifact.json");
+  const v2 = read("lib/onchain/community-pool-v2-artifact.json");
+  const cfg = read("lib/onchain/protocol-config-artifact.json");
 
   it("V2 constructor takes ethUsdMaxPriceAge (7th) and the ProtocolConfig address (9th)", () => {
     const iface = new Interface(v2.abi);

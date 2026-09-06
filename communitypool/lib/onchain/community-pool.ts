@@ -11,10 +11,15 @@ import {
   getAddress,
   isAddress,
 } from "ethers";
-// FROZEN V1 PRODUCTION ARTIFACT. Every production pool deploys from this file. Do not point
-// this import at the V2 candidate artifact; activation of V2 is an explicit, reviewed phase
-// (see docs/contracts-build.md) and test/security/contract-artifact-boundary.test.ts guards it.
+// FROZEN V1 ARTIFACT. Since Phase 2.8 this is no longer the deploy artifact: it stays because
+// existing V1 pools are live user contracts, and it supplies the ABI used to read and interact
+// with them. It must never be handed to a ContractFactory again, and it must never change —
+// scripts/check-frozen-v1-artifact.mjs and test/security/contract-artifact-boundary.test.ts
+// enforce both. V2 keeps every V1 function with identical selectors, so the fund/withdraw
+// helpers below drive either generation through this one ABI.
 import artifact from "./community-pool-v1-artifact.json";
+// ACTIVE DEPLOY ARTIFACT (Phase 2.8): the exact bytecode validated by the mainnet canary.
+import { COMMUNITY_POOL_V2_ARTIFACT } from "./community-pool-v2";
 import { getDefaultErc20TokenConfigs, getPoolChainConfig } from "./pool-chain-config";
 import { weiForUsdContribution } from "./price-math";
 import { getExpectedChainId, networkLabelForChainId } from "@/lib/wallet/expected-chain";
@@ -136,6 +141,84 @@ export function assertChainMatchesExpected(connected: bigint, expected: bigint =
   );
 }
 
+/**
+ * Constructor arguments for a new V2 pool, in ABI order. Pure and exported so the exact values
+ * a deployment would use can be asserted in tests without a wallet or a chain.
+ *
+ * The oracle wiring — ETH/USD feed, each token's feed, every freshness threshold — and the
+ * ProtocolConfig address come from the chain config, never from user input: they are protocol
+ * parameters, not pool settings. The user chooses only name, description, minimum, co-owners and
+ * expiry, exactly as before. Asset support is a fixed platform set (ETH plus the chain's default
+ * ERC20s); funders pick which asset to send when they fund.
+ */
+export function buildV2DeployArgs(
+  chainId: bigint,
+  params: DeployPoolParams,
+  now: Date = new Date(),
+): {
+  args: [string, string, bigint, string[], bigint, string, number, TokenConfigTuple[], string];
+  protocolConfig: string;
+} {
+  const cfg = getPoolChainConfig(chainId);
+  // Deploy-time requirements, enforced here rather than when the config is read: reading must keep
+  // working for existing pools on chains where new V2 deployment is not configured.
+  if (!cfg.protocolConfig) {
+    throw new Error(
+      `No ProtocolConfig is configured for chain ${chainId.toString()}. New pools cannot be deployed there.`,
+    );
+  }
+  if (!cfg.ethUsdMaxPriceAge || cfg.ethUsdMaxPriceAge <= 0) {
+    throw new Error(
+      `No ETH/USD freshness threshold is configured for chain ${chainId.toString()}. New pools cannot be deployed there.`,
+    );
+  }
+  const minimumUsd = parseMinimumUsdHuman(params.minimumUsdHuman);
+  const coOwners = normalizeCoOwners(params.coOwnerAddresses);
+  const expiresAt = dateInputToExpiresAtUnix(params.expirationDateYmd);
+  if (expiresAt <= BigInt(Math.floor(now.getTime() / 1000))) {
+    throw new Error("Pool expiration must be in the future.");
+  }
+  const tokenConfigs: TokenConfigTuple[] = getDefaultErc20TokenConfigs(chainId).map((t) => {
+    if (!t.maxPriceAge || t.maxPriceAge <= 0) {
+      throw new Error(
+        `No freshness threshold is configured for token ${t.token} on chain ${chainId.toString()}.`,
+      );
+    }
+    return {
+      token: getAddress(t.token),
+      usdFeed: getAddress(t.usdFeed),
+      decimals: t.decimals,
+      maxPriceAge: t.maxPriceAge,
+    };
+  });
+  return {
+    protocolConfig: getAddress(cfg.protocolConfig),
+    args: [
+      params.name.trim(),
+      params.description.trim(),
+      minimumUsd,
+      coOwners,
+      expiresAt,
+      getAddress(cfg.ethUsdPriceFeed),
+      cfg.ethUsdMaxPriceAge,
+      tokenConfigs,
+      getAddress(cfg.protocolConfig),
+    ],
+  };
+}
+
+export type TokenConfigTuple = {
+  token: string;
+  usdFeed: string;
+  decimals: number;
+  maxPriceAge: number;
+};
+
+/**
+ * Deploys a CommunityPool **V2** (Phase 2.8). Contributions to pools created here pay the live
+ * protocol fee from the shared ProtocolConfig; existing V1 pools are untouched and keep their
+ * original no-fee behaviour.
+ */
 export async function deployCommunityPool(
   signer: JsonRpcSigner,
   params: DeployPoolParams,
@@ -143,31 +226,26 @@ export async function deployCommunityPool(
   const network = await signer.provider!.getNetwork();
   const chainId = network.chainId;
   assertChainMatchesExpected(chainId);
-  const cfg = getPoolChainConfig(chainId);
 
-  const minimumUsd = parseMinimumUsdHuman(params.minimumUsdHuman);
-  const coOwners = normalizeCoOwners(params.coOwnerAddresses);
-  const expiresAt = dateInputToExpiresAtUnix(params.expirationDateYmd);
-  if (expiresAt <= BigInt(Math.floor(Date.now() / 1000))) {
-    throw new Error("Pool expiration must be in the future.");
+  const { args, protocolConfig } = buildV2DeployArgs(chainId, params);
+
+  // The constructor reverts on a config address with no code, which would waste the deployment
+  // gas. Checking first turns a misconfigured build into a clear message before the wallet
+  // prompt instead of a failed transaction the user pays for.
+  const code = await signer.provider!.getCode(protocolConfig);
+  if (!code || code === "0x") {
+    throw new Error(
+      `No ProtocolConfig contract found at ${protocolConfig} on chain ${chainId.toString()}. ` +
+        `Pool deployment is blocked until that address is correct.`,
+    );
   }
 
-  const tokenConfigs = getDefaultErc20TokenConfigs(chainId).map((t) => ({
-    token: getAddress(t.token),
-    usdFeed: getAddress(t.usdFeed),
-    decimals: t.decimals,
-  }));
-
-  const factory = new ContractFactory(artifact.abi, artifact.bytecode, signer);
-  const contract = await factory.deploy(
-    params.name.trim(),
-    params.description.trim(),
-    minimumUsd,
-    coOwners,
-    expiresAt,
-    cfg.ethUsdPriceFeed,
-    tokenConfigs,
+  const factory = new ContractFactory(
+    COMMUNITY_POOL_V2_ARTIFACT.abi,
+    COMMUNITY_POOL_V2_ARTIFACT.bytecode,
+    signer,
   );
+  const contract = await factory.deploy(...args);
   const deployTx = contract.deploymentTransaction();
   if (!deployTx) throw new Error("Missing deployment transaction.");
   return { contract, deployTx };

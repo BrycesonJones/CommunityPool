@@ -38,6 +38,7 @@ import {
   sanitizeUsdAmountInputTyping,
   validateUsdAmountInputMessage,
 } from "@/lib/onchain/usd-amount-input";
+import { formatFeeBpsPercent, readChainProtocolFeeBps } from "@/lib/onchain/protocol-fee";
 import { postClientSecurityEvent } from "@/lib/security/client-security-event";
 
 type Step = 1 | 2 | 3 | 4;
@@ -110,6 +111,8 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
   const [fundTxHash, setFundTxHash] = useState<string | null>(null);
   const [deployedAddress, setDeployedAddress] = useState<string | null>(null);
   const [feeWarning, setFeeWarning] = useState<string | null>(null);
+  /** Live protocol fee for this chain; null until read, and left null if the read fails. */
+  const [protocolFeeBps, setProtocolFeeBps] = useState<bigint | null>(null);
 
   const erc20Presets = useMemo(
     () => getErc20PresetsForDeployModal(chainId),
@@ -120,6 +123,43 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
     if (chainId === null) return PLATFORM_DEFAULT_SUPPORTED_ASSETS_DISPLAY;
     return describePlatformAcceptedAssetsForDeploy(chainId);
   }, [chainId]);
+
+  /**
+   * Read the chain's live protocol fee so the deploy summary states the real rate. New pools are
+   * V2, so every contribution — including the initial deposit in this flow — pays it. Left null on
+   * a read failure; the summary then describes the fee without asserting a number.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    if (!signer || chainId === null) {
+      setProtocolFeeBps(null);
+      return;
+    }
+    (async () => {
+      try {
+        const cfg = getPoolChainConfig(chainId);
+        if (!cfg.protocolConfig) {
+          if (!cancelled) setProtocolFeeBps(null);
+          return;
+        }
+        const bps = await readChainProtocolFeeBps(signer.provider!, cfg.protocolConfig);
+        if (!cancelled) setProtocolFeeBps(bps);
+      } catch {
+        if (!cancelled) setProtocolFeeBps(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [signer, chainId]);
+
+  const protocolFeeLine = useMemo(() => {
+    if (protocolFeeBps === null) {
+      return "Deducted from each contribution, including your initial deposit (never more than 3%).";
+    }
+    if (protocolFeeBps === BigInt(0)) return "Currently 0% — no protocol fee is charged right now.";
+    return `${formatFeeBpsPercent(protocolFeeBps)} of each contribution, including your initial deposit. Deducted from the amount funded, not added on top.`;
+  }, [protocolFeeBps]);
 
   const minExpirationYmd = getMinExpirationYmd();
 
@@ -842,6 +882,12 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
                     <div>
                       <dt className="text-zinc-500">Supported assets</dt>
                       <dd className="text-white">{supportedAssetsLine}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-zinc-500">Protocol fee on funding</dt>
+                      <dd className="text-white">
+                        {protocolFeeLine}
+                      </dd>
                     </div>
                     <div>
                       <dt className="text-zinc-500">Initial fund</dt>

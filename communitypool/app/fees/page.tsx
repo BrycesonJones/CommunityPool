@@ -5,14 +5,16 @@ import { SiteHeader } from "@/components/site-header";
 export const metadata: Metadata = {
   title: "Fees | CommunityPool",
   description:
-    "CommunityPool is free to sign up for and use. There are no monthly subscription fees; the product is transitioning to a protocol-fee model on pool funding.",
+    "CommunityPool is free to sign up for and use. There are no monthly subscription fees. A 1% protocol fee is deducted from contributions when a CommunityPool is funded.",
 };
 
 /**
- * Public, informational Fees page. Intentionally static: no plan lookup,
- * no billing state, no calculator. Phase 2 will add the on-chain protocol
- * fee and the pre-transaction fee preview; until then this page must not
- * claim a fee is being collected.
+ * Public, informational Fees page. Intentionally static: no plan lookup, no billing state, no
+ * calculator, no chain reads. The protocol fee went live for new (V2) pools in Phase 2.8, so this
+ * page states the launch rate, the direction of the deduction, the on-chain ceiling, and the
+ * limits of protocol-admin authority. The live rate a funder actually pays is read from the
+ * contract in the funding flow — this page is the plain-language explanation, not the source of
+ * truth. If the administrator changes the rate on-chain, update the copy here to match.
  */
 export default function FeesPage() {
   return (
@@ -65,14 +67,36 @@ export default function FeesPage() {
                 deploy.
               </p>
               <p>
-                CommunityPool is transitioning to a protocol-fee model. When a
-                CommunityPool is funded, a small percentage of the contributed
-                amount may be charged as a CommunityPool protocol fee.
+                CommunityPool charges a protocol fee when a CommunityPool is
+                funded. The fee at launch is <strong className="text-white">1%</strong> of
+                the amount being contributed.
               </p>
               <p>
-                Protocol fees are designed to be transparent and visible before
-                a funding transaction is submitted. Protocol funding fees will
-                be displayed before transactions once enabled.
+                The fee is taken <strong className="text-white">out of</strong> the
+                amount you fund — it is never added on top. Fund 1.00 PAXG and
+                your wallet is debited 1.00 PAXG: 0.01 PAXG goes to the protocol
+                treasury and 0.99 PAXG goes into the pool. The exact split is
+                shown before you confirm a funding transaction.
+              </p>
+              <p>
+                The fee lives in a contract on Ethereum, not in this website.
+                The protocol administrator can change it, and any change is an
+                on-chain transaction that takes effect for later contributions —
+                but the contract enforces a hard maximum of{" "}
+                <strong className="text-white">3%</strong> that no administrator
+                can exceed.
+              </p>
+              <p>
+                Being protocol administrator confers no power over your pool.
+                The administrator cannot withdraw or move assets held by a
+                CommunityPool, cannot change who owns a pool, and cannot bypass
+                a pool&rsquo;s withdrawal permissions. Those rights belong to the
+                pool&rsquo;s owner and co-owners alone.
+              </p>
+              <p>
+                Pools created before the protocol fee went live continue to run
+                under their original contract and are not charged a protocol
+                fee.
               </p>
               <p>
                 On-chain transactions still require network gas, which is paid
@@ -96,6 +120,18 @@ export default function FeesPage() {
                 <li className="flex items-start gap-3">
                   <CheckIcon />
                   <span className="text-sm">No monthly subscription fees</span>
+                </li>
+                <li className="flex items-start gap-3">
+                  <CheckIcon />
+                  <span className="text-sm">
+                    1% protocol fee on funding, deducted from the contribution
+                  </span>
+                </li>
+                <li className="flex items-start gap-3">
+                  <CheckIcon />
+                  <span className="text-sm">
+                    Hard-capped at 3% in the contract; shown before you confirm
+                  </span>
                 </li>
               </ul>
               <div className="pt-2">

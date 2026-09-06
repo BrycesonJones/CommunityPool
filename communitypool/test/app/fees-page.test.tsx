@@ -3,9 +3,9 @@
  *
  * Asserts the page renders as a plain informational page and that none of
  * the retired monetization surfaces — $20/month, Free/Pro cards, upgrade or
- * subscription-management CTAs — come back. Also pins the copy that keeps
- * the page honest while Phase 2 is unshipped: the protocol fee is described
- * as transitional, not as live.
+ * subscription-management CTAs — come back. Since Phase 2.8 the protocol fee is LIVE, so the
+ * copy must state the real rate, that it is deducted from the contribution rather than added on
+ * top, the on-chain 3% ceiling, and the limits of the administrator's authority.
  */
 
 import { describe, it, expect, afterEach } from "vitest";
@@ -25,16 +25,29 @@ describe("Fees page", () => {
     expect(screen.getByText(/Unlimited CommunityPool deployments/i)).toBeInTheDocument();
   });
 
-  it("describes the protocol fee as transitional, not live", () => {
+  it("states the live protocol fee, its direction, and the on-chain ceiling", () => {
     render(<FeesPage />);
-    expect(
-      screen.getByText(/transitioning to a protocol-fee model/i),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/will be displayed before transactions once enabled/i),
-    ).toBeInTheDocument();
-    // No concrete percentage is promised while Phase 2 is unshipped.
-    expect(document.body.textContent).not.toMatch(/\d+(\.\d+)?\s?%/);
+    const text = document.body.textContent ?? "";
+    // The launch rate and the hard cap are both stated.
+    expect(text).toMatch(/1%/);
+    expect(text).toMatch(/3%/);
+    // Deducted from the contribution, never added on top.
+    expect(text).toMatch(/out of.{0,40}amount you fund|deducted from the contribution/i);
+    expect(text).toMatch(/never added on top|not added on top/i);
+    // The old "not yet enabled" framing must not survive activation.
+    expect(text).not.toMatch(/transitioning to a protocol-fee model/i);
+    expect(text).not.toMatch(/once enabled/i);
+    expect(text).not.toMatch(/may be charged/i);
+  });
+
+  it("states the limits of protocol-admin authority and the V1 carve-out", () => {
+    render(<FeesPage />);
+    const text = document.body.textContent ?? "";
+    expect(text).toMatch(/cannot withdraw or move assets/i);
+    expect(text).toMatch(/cannot change who owns a pool/i);
+    expect(text).toMatch(/cannot bypass/i);
+    // Pools created before activation keep their original no-fee behaviour.
+    expect(text).toMatch(/before the protocol fee went live/i);
   });
 
   it("contains no subscription-era pricing content", () => {
@@ -61,7 +74,9 @@ describe("Fees page", () => {
     const text = document.body.textContent ?? "";
     // No wallet / contract addresses on the public fee explainer.
     expect(text).not.toMatch(/0x[0-9a-fA-F]{40}/);
-    expect(text).not.toMatch(/treasury|admin wallet|ProtocolConfig/i);
+    // "protocol treasury" is user-facing language for where the fee goes; internal contract and
+    // wallet naming still must not leak.
+    expect(text).not.toMatch(/admin wallet|ProtocolConfig|feeRecipient|bps/i);
   });
 
   it("uses Fees (not Pricing) in the document title and nav", () => {

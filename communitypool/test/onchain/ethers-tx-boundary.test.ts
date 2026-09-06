@@ -45,11 +45,13 @@ import {
 } from "@/lib/onchain/community-pool";
 import { weiForUsdContribution } from "@/lib/onchain/price-math";
 import artifact from "@/lib/onchain/community-pool-v1-artifact.json";
+import v2Artifact from "@/lib/onchain/community-pool-v2-artifact.json";
 
 const CHAIN_ID = 31337n; // Anvil default; the only local chain pool-chain-config knows
 const POOL = "0x00000000000000000000000000000000000000A1";
 const TOKEN = "0x00000000000000000000000000000000000000B2";
 const FEED = "0x00000000000000000000000000000000000000C3";
+const PROTOCOL_CONFIG = "0x00000000000000000000000000000000000000E5";
 // ETH/USD = $2,000.00000000 (8-decimal Chainlink answer)
 const FEED_ANSWER = 200_000_000_000n;
 
@@ -393,10 +395,13 @@ describe("ethers boundary: withdrawals", () => {
 });
 
 describe("ethers boundary: deployment", () => {
-  it("deployCommunityPool encodes the constructor from the committed artifact and sends a creation tx", async () => {
+  it("deployCommunityPool encodes the V2 constructor and sends a creation tx", async () => {
     process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = CHAIN_ID.toString();
     process.env.NEXT_PUBLIC_LOCAL_ETH_USD_FEED = FEED;
+    process.env.NEXT_PUBLIC_LOCAL_PROTOCOL_CONFIG = PROTOCOL_CONFIG;
+    process.env.NEXT_PUBLIC_LOCAL_ETH_USD_MAX_AGE = "7200";
     const rpc = new MockRpc();
+    rpc.code = "0x60806040"; // ProtocolConfig has code, so the preflight passes
     const { signer } = makeSigner(rpc);
     const coOwner = "0x00000000000000000000000000000000000000D4";
     const { contract, deployTx } = await deployCommunityPool(signer, {
@@ -411,10 +416,11 @@ describe("ethers boundary: deployment", () => {
     const sent = rpc.sent[0];
     expect(sent.to).toBeNull();
     expect(sent.value).toBe(0n);
-    // Creation calldata = bytecode ++ abi-encoded constructor args.
-    expect(sent.data.startsWith(artifact.bytecode)).toBe(true);
-    const ctor = poolIface.deploy;
-    const encodedArgs = "0x" + sent.data.slice(artifact.bytecode.length);
+    // New pools are V2 (Phase 2.8): creation calldata = V2 bytecode ++ abi-encoded args.
+    expect(sent.data.startsWith(v2Artifact.bytecode)).toBe(true);
+    expect(sent.data.startsWith(artifact.bytecode)).toBe(false);
+    const ctor = new Interface(v2Artifact.abi).deploy;
+    const encodedArgs = "0x" + sent.data.slice(v2Artifact.bytecode.length);
     const decoded = coder.decode(ctor.inputs, encodedArgs);
     expect(decoded[0]).toBe("Boundary Pool");
     expect(decoded[1]).toBe("desc");
@@ -422,10 +428,53 @@ describe("ethers boundary: deployment", () => {
     expect([...decoded[3]]).toEqual([getAddress(coOwner)]);
     expect(decoded[4]).toBe(BigInt(Math.floor(Date.parse("2099-12-31T23:59:59.999Z") / 1000)));
     expect(getAddress(decoded[5])).toBe(getAddress(FEED));
+    expect(Number(decoded[6])).toBe(7200);
+    expect(getAddress(decoded[8])).toBe(getAddress(PROTOCOL_CONFIG));
     // Deployed address comes back from the receipt's contractAddress.
     const receipt = await deployTx.wait();
     expect(receipt?.contractAddress).toBe(getAddress(POOL));
     expect(await contract.getAddress()).toBeTruthy();
+  });
+
+  it("deployCommunityPool refuses to broadcast when the ProtocolConfig address has no code", async () => {
+    // The constructor reverts on a codeless config address; catching it here means the user is
+    // never charged deployment gas for a pool that cannot be created.
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = CHAIN_ID.toString();
+    process.env.NEXT_PUBLIC_LOCAL_ETH_USD_FEED = FEED;
+    process.env.NEXT_PUBLIC_LOCAL_PROTOCOL_CONFIG = PROTOCOL_CONFIG;
+    process.env.NEXT_PUBLIC_LOCAL_ETH_USD_MAX_AGE = "7200";
+    const rpc = new MockRpc();
+    rpc.code = "0x";
+    const { signer } = makeSigner(rpc);
+    await expect(
+      deployCommunityPool(signer, {
+        name: "x",
+        description: "y",
+        minimumUsdHuman: "1",
+        coOwnerAddresses: [],
+        expirationDateYmd: "2099-12-31",
+      }),
+    ).rejects.toThrow(/No ProtocolConfig contract found/i);
+    expect(rpc.sent).toHaveLength(0);
+  });
+
+  it("deployCommunityPool refuses to broadcast when the chain has no configured ProtocolConfig", async () => {
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = CHAIN_ID.toString();
+    process.env.NEXT_PUBLIC_LOCAL_ETH_USD_FEED = FEED;
+    delete process.env.NEXT_PUBLIC_LOCAL_PROTOCOL_CONFIG;
+    const rpc = new MockRpc();
+    rpc.code = "0x60806040";
+    const { signer } = makeSigner(rpc);
+    await expect(
+      deployCommunityPool(signer, {
+        name: "x",
+        description: "y",
+        minimumUsdHuman: "1",
+        coOwnerAddresses: [],
+        expirationDateYmd: "2099-12-31",
+      }),
+    ).rejects.toThrow(/No ProtocolConfig is configured/i);
+    expect(rpc.sent).toHaveLength(0);
   });
 
   it("deployCommunityPool refuses to broadcast on a chain that does not match the build", async () => {

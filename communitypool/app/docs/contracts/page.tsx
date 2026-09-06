@@ -17,20 +17,32 @@ export default function ContractsReferencePage() {
     >
       <Callout tone="info" title="Versioning">
         <p>
-          Deployed addresses will be tracked here per network once mainnet
-          ships. For now, all deployments are on Sepolia. The runtime ABI
-          is the <code>abi</code> field of{" "}
-          <code>lib/onchain/community-pool-v1-artifact.json</code>, which CI
-          verifies byte-for-byte against <code>forge-out/</code> on every
-          push. Older pools deployed before the partial-withdraw functions
-          existed are auto-detected at runtime via{" "}
-          <code>poolSupportsPartialWithdraw</code> — see the{" "}
+          Two generations of pool are live at once. Pools created from the
+          protocol-fee release onwards are <strong>V2</strong>: they hold an
+          immutable reference to a shared <code>ProtocolConfig</code> and
+          deduct a protocol fee from each contribution. Pools created before
+          it are <strong>V1</strong>: identical apart from the constructor and
+          the fee, and they charge nothing. V1 pools keep working exactly as
+          they always have, and nothing about them changes.
+        </p>
+        <p>
+          V2 keeps every V1 function with the same selectors, so one ABI drives
+          fund and withdraw on either generation. The runtime ABI is the{" "}
+          <code>abi</code> field of{" "}
+          <code>lib/onchain/community-pool-v2-artifact.json</code> (V1&apos;s is
+          frozen alongside it), and CI verifies both byte-for-byte against{" "}
+          <code>forge-out/</code> on every push. A pool&apos;s generation is
+          detected at runtime from its own bytecode — the V2-only{" "}
+          <code>protocolConfig()</code> and <code>getProtocolFeeConfig()</code>{" "}
+          selectors — the same way older pools without the partial-withdraw
+          functions are detected via <code>poolSupportsPartialWithdraw</code>.
+          See the{" "}
           <Link href="/docs/concepts/pool-lifecycle">lifecycle page</Link>{" "}
           for details.
         </p>
       </Callout>
 
-      <h2>Constructor</h2>
+      <h2>Constructor (V2)</h2>
       <CodeBlock lang="solidity">{`constructor(
     string memory name_,
     string memory description_,
@@ -38,19 +50,55 @@ export default function ContractsReferencePage() {
     address[] memory coOwners,
     uint64 expiresAt_,
     address ethUsdFeed,
-    TokenConfig[] memory tokenConfigs
+    uint32 ethUsdMaxPriceAge,
+    TokenConfig[] memory tokenConfigs,
+    address protocolConfig_
 )`}</CodeBlock>
       <p>
         Deploys a pool. The caller becomes the immutable <code>deployer</code>
         {" "}and is automatically added to the owner set. <code>minimumUsd_</code>{" "}
         is denominated in 18-decimal USD wei.{" "}
         <code>TokenConfig</code> is{" "}
-        <code>{`{ address token; address usdFeed; uint8 decimals }`}</code>.
+        <code>{`{ address token; address usdFeed; uint8 decimals; uint32 maxPriceAge }`}</code>.
+      </p>
+      <p>
+        Every oracle value is fixed here and can never be changed: each feed,
+        each feed&apos;s decimals (read from the feed at construction), and each{" "}
+        <code>maxPriceAge</code> freshness window. So is{" "}
+        <code>protocolConfig_</code>, which must be a contract with code. V1
+        took the same arguments without <code>ethUsdMaxPriceAge</code>,{" "}
+        <code>maxPriceAge</code> and <code>protocolConfig_</code>.
       </p>
       <p>
         Reverts: <code>CommunityPool__ZeroAddress</code>,{" "}
         <code>CommunityPool__DuplicateOwner</code>,{" "}
-        <code>CommunityPool__DuplicateToken</code>.
+        <code>CommunityPool__DuplicateToken</code>,{" "}
+        <code>CommunityPool__ProtocolConfigNotContract</code>,{" "}
+        <code>PriceConverter__InvalidMaxPriceAge</code>,{" "}
+        <code>PriceConverter__UnsupportedFeedDecimals</code>.
+      </p>
+
+      <h2>Protocol fee (V2 only)</h2>
+      <p>
+        Each contribution to a V2 pool pays{" "}
+        <code>floor(gross × feeBps / 10_000)</code> to the treasury, taken{" "}
+        <strong>out of</strong> the amount funded rather than added on top: the
+        funder is debited exactly the amount they chose, and the pool keeps the
+        remainder. The rate and the recipient are read from the shared{" "}
+        <code>ProtocolConfig</code> on every contribution, so a rate change
+        applies to existing pools without redeploying anything. The contract
+        re-checks the 300 bps (3%) ceiling itself on every contribution and
+        reverts above it, so no configuration can exceed the cap.
+      </p>
+      <p>
+        The protocol administrator&apos;s authority stops at that configuration.
+        It confers no ability to withdraw or move pool assets, change pool
+        ownership, or bypass a pool&apos;s withdrawal rules.
+      </p>
+      <p>
+        The USD minimum is checked against the <em>gross</em> amount, so a
+        contribution that meets <code>minimumUsd</code> is never rejected
+        because of the fee.
       </p>
 
       <h2>Funding</h2>
@@ -167,8 +215,26 @@ export default function ContractsReferencePage() {
     address[] whitelistedTokens
 );
 
-event Funded(address indexed funder, uint256 amount);
-event FundedERC20(address indexed token, address indexed funder, uint256 amount);
+// V2 (fee-bearing). feeRecipient is the zero address when feeAmount is 0.
+event Funded(
+    address indexed funder,
+    address indexed feeRecipient,
+    uint256 grossAmount,
+    uint256 feeAmount,
+    uint256 netAmount
+);
+event FundedERC20(
+    address indexed token,
+    address indexed funder,
+    address indexed feeRecipient,
+    uint256 grossAmount,
+    uint256 feeAmount,
+    uint256 netAmount
+);
+
+// V1 (no fee) emitted the simpler form:
+// event Funded(address indexed funder, uint256 amount);
+// event FundedERC20(address indexed token, address indexed funder, uint256 amount);
 event Withdrawn(address indexed owner, uint256 amount);
 event WithdrawnToken(address indexed token, address indexed owner, uint256 amount);`}</CodeBlock>
 
@@ -186,13 +252,27 @@ event WithdrawnToken(address indexed token, address indexed owner, uint256 amoun
         <li><code>CommunityPool__InvalidWithdrawAmount</code></li>
         <li><code>CommunityPool__InsufficientBalance</code></li>
         <li><code>CommunityPool__EthTransferFailed</code></li>
+        <li><code>CommunityPool__ProtocolConfigNotContract</code> (V2)</li>
+        <li><code>CommunityPool__ProtocolFeeExceedsMaximum</code> (V2)</li>
+        <li><code>CommunityPool__InvalidFeeRecipient</code> (V2)</li>
+        <li><code>CommunityPool__ProtocolFeeTransferFailed</code> (V2)</li>
+        <li><code>CommunityPool__UnsupportedTokenBehavior</code> (V2)</li>
+        <li><code>PriceConverter__InvalidPrice</code> (V2)</li>
+        <li><code>PriceConverter__IncompleteRound</code> (V2)</li>
+        <li><code>PriceConverter__FutureTimestamp</code> (V2)</li>
+        <li><code>PriceConverter__StalePrice</code> (V2)</li>
+        <li><code>PriceConverter__UnsupportedFeedDecimals</code> (V2)</li>
+        <li><code>PriceConverter__InvalidMaxPriceAge</code> (V2)</li>
       </ul>
 
       <h2>Deployed addresses</h2>
       <p>
-        Sepolia deployment artifacts live in{" "}
-        <code>communitypool/broadcast/</code>. Mainnet addresses will be
-        published here when we ship.
+        Pools are deployed by their creators, so each pool has its own address —
+        the one shown after deployment and on the pool&apos;s page. The one
+        shared contract is <code>ProtocolConfig</code> on Ethereum mainnet, at{" "}
+        <code>0x2eD7F089a6C2971B24eA91121aD65f9242F622c0</code>, which every V2
+        pool reads its fee rate and treasury from. Sepolia deployment artifacts
+        live in <code>communitypool/broadcast/</code>.
       </p>
     </DocsPage>
   );

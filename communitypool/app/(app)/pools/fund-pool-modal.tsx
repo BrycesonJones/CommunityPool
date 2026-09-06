@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { isAddress, getAddress } from "ethers";
+import { formatUnits, isAddress, getAddress, parseUnits } from "ethers";
 import { useWallet } from "@/components/wallet-provider";
 import {
   fundPoolEth,
@@ -20,6 +20,12 @@ import {
   parsePositiveDecimal,
   validateFundEthUsdHuman,
 } from "@/lib/onchain/tx-economics";
+import {
+  buildFundingPreview,
+  formatFeeBpsPercent,
+  type FundingPreview,
+} from "@/lib/onchain/protocol-fee";
+import { weiForUsdContribution } from "@/lib/onchain/price-math";
 import { postClientSecurityEvent } from "@/lib/security/client-security-event";
 
 type Step = 1 | 2 | 3;
@@ -47,6 +53,19 @@ type Props = {
    */
   initialPool?: { name?: string; address: string; chainId?: number };
 };
+
+/** Token-native display: trims trailing zeros but keeps small fee amounts visible. */
+function formatTokenAmount(raw: bigint, decimals: number): string {
+  const full = formatUnits(raw, decimals);
+  if (!full.includes(".")) return full;
+  const [whole, frac] = full.split(".");
+  const trimmed = frac.replace(/0+$/, "");
+  if (trimmed === "") return whole;
+  // Keep at least the first significant digit of a very small fee rather than rounding it away.
+  const firstSig = trimmed.search(/[1-9]/);
+  const keep = Math.max(4, firstSig + 1);
+  return `${whole}.${trimmed.slice(0, keep)}`;
+}
 
 function BackIcon() {
   return (
@@ -90,6 +109,8 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
   const [whitelistLower, setWhitelistLower] = useState<Set<string> | null>(null);
   const [whitelistLoading, setWhitelistLoading] = useState(false);
   const [feeWarning, setFeeWarning] = useState<string | null>(null);
+  const [feePreview, setFeePreview] = useState<FundingPreview | null>(null);
+  const [feePreviewLoading, setFeePreviewLoading] = useState(false);
 
   const erc20Presets = useMemo(
     () => getErc20PresetsForPoolChain(initialPool?.chainId, chainId),
@@ -194,6 +215,8 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
     setWhitelistLower(null);
     setWhitelistLoading(false);
     setFeeWarning(null);
+    setFeePreview(null);
+    setFeePreviewLoading(false);
   }, []);
 
   useEffect(() => {
@@ -216,6 +239,54 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
     setErrors(next);
     return Object.keys(next).length === 0;
   }
+
+  /**
+   * Protocol-fee preview for the review step. Uses the same gross amount the funding transaction
+   * will send, so what the user sees is what settles. Prices can move between this read and the
+   * signature, which shifts the gross slightly; the fee *rate* shown stays exact either way.
+   */
+  const loadFeePreview = useCallback(async (): Promise<void> => {
+    setFeePreview(null);
+    if (!signer || chainId === null) return;
+    const addr = poolAddress.trim();
+    if (!isAddress(addr)) return;
+    setFeePreviewLoading(true);
+    try {
+      let grossAmount: bigint;
+      let symbol: string;
+      let decimals: number;
+      if (fundKind === "eth") {
+        const cfg = getPoolChainConfig(chainId);
+        grossAmount = await weiForUsdContribution(signer, cfg.ethUsdPriceFeed, fundAmount.trim());
+        symbol = "ETH";
+        decimals = 18;
+      } else {
+        const preset = erc20Presets.find((x) => x.id === erc20Pick);
+        if (!preset) return;
+        const human = await erc20UsdToHumanAmountString(signer, preset, fundAmount.trim());
+        if (human === null) return;
+        grossAmount = parseUnits(human, preset.decimals);
+        symbol = preset.symbol;
+        decimals = preset.decimals;
+      }
+      setFeePreview(
+        await buildFundingPreview({
+          provider: signer.provider!,
+          poolAddress: getAddress(addr),
+          grossAmount,
+          symbol,
+          decimals,
+        }),
+      );
+    } catch {
+      setFeePreview({
+        kind: "unavailable",
+        message: "Could not read this pool's current protocol fee from the network.",
+      });
+    } finally {
+      setFeePreviewLoading(false);
+    }
+  }, [signer, chainId, poolAddress, fundKind, fundAmount, erc20Presets, erc20Pick]);
 
   function resolveToken(): string {
     const p = erc20Presets.find((x) => x.id === erc20Pick);
@@ -253,6 +324,7 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
       }
     }
     setStep(3);
+    void loadFeePreview();
   }
 
   function assetSummary(): string {
@@ -519,6 +591,49 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
                   <dt className="text-zinc-500">Amount (human dollars, USD)</dt>
                   <dd className="text-white">{fundAmount || "—"}</dd>
                 </div>
+                {feePreviewLoading && (
+                  <p className="text-xs text-zinc-500">Reading this pool’s current protocol fee…</p>
+                )}
+                {feePreview?.kind === "split" && (
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+                    <div className="flex justify-between gap-4">
+                      <span className="text-zinc-400">Funding amount</span>
+                      <span className="text-white font-mono">
+                        {formatTokenAmount(feePreview.split.grossAmount, feePreview.decimals)}{" "}
+                        {feePreview.symbol}
+                      </span>
+                    </div>
+                    <div className="mt-1 flex justify-between gap-4">
+                      <span className="text-zinc-400">
+                        Protocol fee ({formatFeeBpsPercent(feePreview.split.feeBps)})
+                      </span>
+                      <span className="text-white font-mono">
+                        {formatTokenAmount(feePreview.split.feeAmount, feePreview.decimals)}{" "}
+                        {feePreview.symbol}
+                      </span>
+                    </div>
+                    <div className="mt-1 flex justify-between gap-4">
+                      <span className="text-zinc-400">Pool receives</span>
+                      <span className="text-white font-mono">
+                        {formatTokenAmount(feePreview.split.netAmount, feePreview.decimals)}{" "}
+                        {feePreview.symbol}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs text-zinc-500">
+                      The protocol fee comes out of the amount you fund — it is not added on top.
+                      Your wallet is debited the funding amount, plus network gas. Amounts are
+                      estimated from the current price and settle at the price when your
+                      transaction is mined.
+                    </p>
+                  </div>
+                )}
+                {feePreview?.kind === "unavailable" && (
+                  <p className="text-sm text-amber-400" role="status">
+                    {feePreview.message} If this pool charges a protocol fee, it is deducted from
+                    your funding amount at the rate the contract reads when the transaction is
+                    mined (never more than 3%).
+                  </p>
+                )}
                 {lastTxHash && (
                   <div>
                     <dt className="text-zinc-500">Last tx</dt>
