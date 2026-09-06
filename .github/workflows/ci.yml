@@ -127,6 +127,17 @@ jobs:
       - name: Forge tests
         run: forge test -vvv
 
+      - name: Security fuzz + invariant suites (default strength)
+        run: |
+          # Runs test/fee-security/* at the default-profile strength (fuzz 512,
+          # invariant 128 runs x depth 64). The heavy campaign (fuzz 5000,
+          # invariant 500 x 100) is `npm run contracts:security`; see
+          # docs/security/protocol-fee-threat-model.md.
+          forge test --match-path 'test/fee-security/*' -vv
+
+      - name: Security heavy campaign (fuzz 5000, invariant 500 x 100)
+        run: FOUNDRY_PROFILE=security forge test --match-path 'test/fee-security/*' -vv
+
       - name: Regenerate candidate contract artifacts from the clean build
         run: node scripts/sync-contract-artifact.mjs
 

@@ -22,6 +22,7 @@
     "contracts:sync-artifact": "node scripts/sync-contract-artifact.mjs",
     "contracts:check-artifact": "node scripts/sync-contract-artifact.mjs --check",
     "contracts:check-v1-frozen": "node scripts/check-frozen-v1-artifact.mjs",
+    "contracts:security": "FOUNDRY_PROFILE=security forge test --match-path 'test/fee-security/*' -vv",
     "supply-chain:check": "node scripts/supply-chain-check.mjs",
     "sbom": "cyclonedx-npm --output-format json --output-file sbom.json --omit dev"
   },
