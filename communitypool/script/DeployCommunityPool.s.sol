@@ -24,11 +24,20 @@ contract DeployCommunityPool is Script {
     //   ETH/USD  heartbeat 3600  -> 7200
     //   BTC/USD  heartbeat 3600  -> 7200   (WBTC is priced via BTC/USD; no WBTC/USD feed exists)
     //   PAXG/USD heartbeat 86400 -> 172800
-    //   XAU/USD  heartbeat 86400 -> 259200 (market-hours feed: weekend/holiday gaps exceed 2x)
+    //   XAU/USD  heartbeat 86400 -> 172800
+    //
+    // XAU/USD is labelled a Precious Metals market-hours feed, so a weekend publishing pause was
+    // assumed at first. Measurement disproved it: walking consecutive aggregator rounds across
+    // three multi-week windows (Nov-Dec 2024, Jul-Aug 2025, Jan-Feb 2026) plus the Christmas 2025
+    // and Good Friday 2026 closures, the largest gap between consecutive rounds was 24.01 h - the
+    // feed honours its 86400 s heartbeat 24/7/365 and republishes the frozen last-close price while
+    // the spot market is shut. XAU/USD therefore takes the same 2x-heartbeat policy as PAXG/USD;
+    // no market-hours exemption exists anywhere in the contracts. Evidence, methodology and the
+    // fail-closed consequence if that cadence ever changes: docs/deployment/phase-2-7-mainnet-canary.md.
     uint32 internal constant MAINNET_ETH_USD_MAX_AGE = 7_200;
     uint32 internal constant MAINNET_BTC_USD_MAX_AGE = 7_200;
     uint32 internal constant MAINNET_PAXG_USD_MAX_AGE = 172_800;
-    uint32 internal constant MAINNET_XAU_USD_MAX_AGE = 259_200;
+    uint32 internal constant MAINNET_XAU_USD_MAX_AGE = 172_800;
 
     function run() external returns (CommunityPool) {
         HelperConfig helperConfig = new HelperConfig();

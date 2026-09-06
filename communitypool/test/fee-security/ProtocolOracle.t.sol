@@ -473,6 +473,62 @@ contract ProtocolOracleTest is FeeSecurityBase {
         harness.checkMaxAge(1);
     }
 
+    // ------------------------------------------------------------------ XAU/USD (XAU₮) cadence policy
+
+    /// @dev XAU₮ is priced from Chainlink's XAU/USD feed at the same 2x-heartbeat threshold as
+    /// PAXG/USD (172800 s). That is safe only because the feed publishes 24/7/365: measurement of
+    /// consecutive aggregator rounds across three multi-week windows plus the Christmas 2025 and
+    /// Good Friday 2026 gold-market closures found a maximum gap of 24.01 h, with the frozen
+    /// last-close price republished on the heartbeat while spot gold is shut
+    /// (docs/deployment/phase-2-7-mainnet-canary.md). These two tests pin both sides of that
+    /// decision: the observed behaviour stays fundable, and a hypothetical publishing pause of a
+    /// full gold weekend fails closed rather than being waved through.
+    uint32 internal constant DAILY_HEARTBEAT_MAX_AGE = 172_800; // 2x 86400 s
+    uint256 internal constant GOLD_WEEKEND = 49 hours; // 17:00 ET Fri close -> 18:00 ET Sun open
+
+    function _dailyFeedPool() internal returns (CommunityPool p, MockOracle feed) {
+        feed = new MockOracle(8, WBTC_PRICE);
+        p = _oraclePool(address(ethOracle), ETH_AGE, address(feed), 8, DAILY_HEARTBEAT_MAX_AGE);
+    }
+
+    function testDailyHeartbeatFeedRepublishingThroughAWeekendStaysFundable() public {
+        (CommunityPool p, MockOracle feed) = _dailyFeedPool();
+        // Observed behaviour: a round every 24 h right through the closed gold market.
+        for (uint256 elapsed = 0; elapsed < GOLD_WEEKEND + 12 hours; elapsed += 24 hours) {
+            vm.warp(T0 + elapsed);
+            feed.refresh(WBTC_PRICE); // frozen last-close price, fresh timestamp
+            vm.prank(funder);
+            p.fundERC20(IERC20(address(wbtc)), 1e8);
+        }
+        assertEq(wbtc.balanceOf(address(p)), 3 * 0.99e8, "every contribution settled");
+    }
+
+    function testFullWeekendPublishingPauseFailsClosedInsteadOfBeingWavedThrough() public {
+        (CommunityPool p, MockOracle feed) = _dailyFeedPool();
+        feed.refresh(WBTC_PRICE);
+        // Still inside the threshold two days later.
+        vm.warp(T0 + DAILY_HEARTBEAT_MAX_AGE);
+        vm.prank(funder);
+        p.fundERC20(IERC20(address(wbtc)), 1e8);
+        // A full 49 h gold weekend with no round at all exceeds 2x heartbeat: XAU₮ becomes
+        // temporarily unfundable. Deliberate: no market-hours exemption widens this window, and
+        // custody, withdrawals and expiry release are unaffected.
+        vm.warp(T0 + GOLD_WEEKEND);
+        Snapshot memory before = _snap(p);
+        vm.prank(funder);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                PriceConverter.PriceConverter__StalePrice.selector, T0, T0 + GOLD_WEEKEND, DAILY_HEARTBEAT_MAX_AGE
+            )
+        );
+        p.fundERC20(IERC20(address(wbtc)), 1e8);
+        _assertUnchanged(p, before);
+        // Owners keep full access to what is already in the pool while the feed is quiet.
+        vm.prank(owner);
+        p.withdrawToken(IERC20(address(wbtc)));
+        assertEq(wbtc.balanceOf(address(p)), 0, "withdrawal never depends on the oracle");
+    }
+
     // ------------------------------------------------------------------ legacy fixture feed (MockV3Aggregator)
 
     function testLegacyFixtureFeedGoesStalePastFixtureThreshold() public {

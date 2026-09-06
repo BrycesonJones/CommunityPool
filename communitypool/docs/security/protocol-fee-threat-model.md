@@ -106,6 +106,18 @@ blocks ETH contributions while ERC-20 contributions with a fresh feed proceed,
 and vice versa. Mainnet values and their rationale are recorded in
 `docs/deployment/phase-2-7-mainnet-canary.md`.
 
+There is deliberately **no** market-hours exemption: no code path accepts a
+price older than the asset's `maxPriceAge` because a market is closed. XAU₮ is
+priced from XAU/USD at the same 2× heartbeat as PAXG/USD, which is sound because
+that feed publishes 24/7/365 (largest gap between consecutive rounds measured
+across weekends, Christmas 2025 and Good Friday 2026: 24.01 h — see
+`docs/deployment/phase-2-7-mainnet-canary.md`). Pricing XAU₮ from spot gold, like
+pricing WBTC from BTC/USD, is an estimate of the asset's value rather than its
+own market price; it moves only the `minimumUsd` gate, never token amounts.
+A pull-oracle alternative (Chainlink Data Streams) was evaluated and rejected for
+V2: it would put a credentialed backend on the critical path of a funding
+transaction. Both decisions are recorded in the deployment readiness document.
+
 Residual (documented, not enforced): a feed that goes silent longer than its
 `maxPriceAge` makes that asset unfundable until a new round lands; owners can
 still withdraw and expiry release is unaffected. A feed publishing a wrong but

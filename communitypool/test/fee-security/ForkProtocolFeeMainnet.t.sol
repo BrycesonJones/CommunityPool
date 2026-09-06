@@ -20,7 +20,8 @@ contract ForkProtocolFeeMainnetTest is Test {
     address internal constant MAINNET_PAXG_USD_FEED = 0x9944D86CEB9160aF5C5feB251FD671923323f8C3;
     address internal constant MAINNET_XAUT = 0x68749665FF8D2d112Fa859AA293F07A622782F38;
     address internal constant MAINNET_XAU_USD_FEED = 0x214eD9Da11D2fbe465a6fc601a91E62EbEc1a0D6;
-    uint32 internal constant ORACLE_MAX_AGE_XAU = 259_200; // market-hours feed: 3x heartbeat
+    // XAU/USD takes the same 2x-heartbeat policy as PAXG/USD: the feed publishes 24/7/365
+    // (max observed gap 24.01 h, including weekends and gold-market holidays).
 
     /// @dev Verified mainnet policy (docs/deployment/phase-2-7-mainnet-canary.md): 2x feed heartbeat.
     uint32 internal constant ORACLE_MAX_AGE = 7_200; // ETH/USD + BTC/USD heartbeat 3600 s
@@ -141,7 +142,7 @@ contract ForkProtocolFeeMainnetTest is Test {
         _assertFeedHealthy(MAINNET_ETH_USD, ORACLE_MAX_AGE, "ETH/USD");
         _assertFeedHealthy(MAINNET_WBTC_USD_FEED, ORACLE_MAX_AGE, "BTC/USD");
         _assertFeedHealthy(MAINNET_PAXG_USD_FEED, ORACLE_MAX_AGE_DAILY, "PAXG/USD");
-        _assertFeedHealthy(MAINNET_XAU_USD_FEED, ORACLE_MAX_AGE_XAU, "XAU/USD");
+        _assertFeedHealthy(MAINNET_XAU_USD_FEED, ORACLE_MAX_AGE_DAILY, "XAU/USD");
     }
 
     function testFork_PoolCapturesRealFeedDecimals() public {
@@ -158,12 +159,12 @@ contract ForkProtocolFeeMainnetTest is Test {
         assertEq(tage, ORACLE_MAX_AGE);
     }
 
-    function testFork_XautPoolConstructsWithMarketHoursThreshold() public {
+    function testFork_XautPoolConstructsAndPricesFromXauUsd() public {
         if (_skipIfNoRpc()) return;
         ProtocolConfig c = new ProtocolConfig(admin, treasury, 100);
         CommunityPool.TokenConfig[] memory tks = new CommunityPool.TokenConfig[](1);
         tks[0] = CommunityPool.TokenConfig({
-            token: MAINNET_XAUT, usdFeed: MAINNET_XAU_USD_FEED, decimals: 6, maxPriceAge: ORACLE_MAX_AGE_XAU
+            token: MAINNET_XAUT, usdFeed: MAINNET_XAU_USD_FEED, decimals: 6, maxPriceAge: ORACLE_MAX_AGE_DAILY
         });
         address[] memory cos = new address[](0);
         CommunityPool p = new CommunityPool(
@@ -172,7 +173,7 @@ contract ForkProtocolFeeMainnetTest is Test {
         (, uint8 td, uint8 tfd, uint32 tage) = p.getTokenInfo(MAINNET_XAUT);
         assertEq(td, 6);
         assertEq(tfd, 8);
-        assertEq(tage, ORACLE_MAX_AGE_XAU);
+        assertEq(tage, ORACLE_MAX_AGE_DAILY);
         // 0.01 XAU₮ (troy oz) is worth far more than $5, so the minimum gate passes at any sane price.
         deal(MAINNET_XAUT, funder, 10_000);
         vm.startPrank(funder);
@@ -187,6 +188,36 @@ contract ForkProtocolFeeMainnetTest is Test {
             assertEq(IERC20(MAINNET_XAUT).balanceOf(address(p)), 0);
             assertEq(IERC20(MAINNET_XAUT).balanceOf(funder), 10_000);
         }
+    }
+
+    /// @dev Smoke check on the live cadence of the two 24h-heartbeat feeds: every gap between
+    /// recent consecutive rounds must sit inside the threshold the deploy script wires.
+    ///
+    /// Honest limitation: at the feeds' current few-minute cadence this window spans only hours,
+    /// so it cannot by itself observe a weekend. The durable evidence that XAU/USD publishes
+    /// 24/7/365 (max gap 24.01 h across weekends, Christmas 2025 and Good Friday 2026) is the
+    /// off-chain round-walk recorded in docs/deployment/phase-2-7-mainnet-canary.md, which the
+    /// canary checklist re-runs on deployment day. This test guards against a regime change that
+    /// is visible inside the sampled window.
+    function testFork_DailyFeedsRecentRoundsRespectThreshold() public {
+        if (_skipIfNoRpc()) return;
+        _assertRecentGaps(MAINNET_XAU_USD_FEED, ORACLE_MAX_AGE_DAILY, "XAU/USD");
+        _assertRecentGaps(MAINNET_PAXG_USD_FEED, ORACLE_MAX_AGE_DAILY, "PAXG/USD");
+    }
+
+    function _assertRecentGaps(address feed, uint32 maxAge, string memory label) internal view {
+        AggregatorV3Interface a = AggregatorV3Interface(feed);
+        (uint80 latest,,, uint256 newer,) = a.latestRoundData();
+        uint256 sampled;
+        for (uint256 i = 1; i <= 40; i++) {
+            if (latest < i) break;
+            (, int256 answer,, uint256 older,) = a.getRoundData(latest - uint80(i));
+            if (older == 0 || answer <= 0) break; // walked past this aggregator phase
+            assertLe(newer - older, maxAge, string.concat(label, ": gap between consecutive rounds"));
+            newer = older;
+            sampled++;
+        }
+        assertGt(sampled, 0, string.concat(label, ": no historical rounds readable"));
     }
 
     /// @dev Real feed, real pool: once the fork clock passes the threshold without a new round,
