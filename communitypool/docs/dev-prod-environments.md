@@ -20,7 +20,7 @@ Both Supabase projects live in the org `Bryceson's Apps`
 
 ## Environment-variable contract
 
-All Supabase/Stripe/etc. env vars live in **two places only**:
+All Supabase/RPC/etc. env vars live in **two places only**:
 
 1. Local `.env` (gitignored) — Dev values for `npm run dev` and local scripts.
 2. Vercel Project Settings → Environment Variables — Prod values scoped to
@@ -38,13 +38,13 @@ Never paste real keys into `.env.example`, the repo, or chat tools.
 | `SUPABASE_URL` | (mirror of NEXT_PUBLIC_SUPABASE_URL) | (mirror of NEXT_PUBLIC_SUPABASE_URL) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Prod `service_role` JWT (mark Sensitive) | Dev `service_role` JWT (Sensitive) |
 | `NEXT_PUBLIC_EXPECTED_CHAIN_ID` | `11155111` (Sepolia) — flip to `1` for mainnet launch | `11155111` |
-| `NEXT_PUBLIC_APP_URL` | `https://communitypool.online` | (unset — preview URLs are dynamic) |
 | `UPSTASH_REDIS_REST_URL` | real Upstash endpoint (us-east-1 to match Vercel iad1) | optional |
 | `UPSTASH_REDIS_REST_TOKEN` | real Upstash token (Sensitive) | optional |
-| `STRIPE_SECRET_KEY` | live `sk_live_...` | test `sk_test_...` |
-| `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | live `pk_live_...` | test `pk_test_...` |
-| `STRIPE_PRO_MONTHLY_PRICE_ID` | live `price_...` | test `price_...` |
-| `STRIPE_WEBHOOK_SECRET` | live `whsec_...` (per Stripe Dashboard endpoint) | test `whsec_...` (from `stripe listen`) |
+
+Retired (delete from both scopes if still present): `STRIPE_SECRET_KEY`,
+`NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`, `STRIPE_PRO_MONTHLY_PRICE_ID`,
+`STRIPE_PRO_YEARLY_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `NEXT_PUBLIC_APP_URL`.
+CommunityPool no longer has a subscription product; nothing reads them.
 
 `SUPABASE_SERVICE_ROLE_KEY` is server-side only. Never use the
 `NEXT_PUBLIC_` prefix on it — that would inline the key into the browser

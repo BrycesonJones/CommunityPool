@@ -62,14 +62,14 @@ describe("rate-limit helper (in-memory backend)", () => {
     const { enforceRateLimits, POLICIES } = await import(
       "@/lib/security/rate-limit"
     );
-    const limit = POLICIES.stripe_checkout_user.limit;
+    const limit = POLICIES.pool_check_deploy_user.limit;
     for (let i = 0; i < limit; i += 1) {
       await enforceRateLimits([
-        { name: "stripe_checkout_user", identifier: "user-1" },
+        { name: "pool_check_deploy_user", identifier: "user-1" },
       ]);
     }
     const response = await enforceRateLimits([
-      { name: "stripe_checkout_user", identifier: "user-1" },
+      { name: "pool_check_deploy_user", identifier: "user-1" },
     ]);
     expect(response).not.toBeNull();
     if (!response) return;

@@ -25,9 +25,7 @@ export type PolicyName =
   | "pool_balances_address"
   | "pool_owners_user_pool"
   | "pool_check_deploy_user"
-  | "pool_record_deploy_user"
-  | "stripe_checkout_user"
-  | "stripe_portal_user";
+  | "pool_record_deploy_user";
 
 interface Policy {
   limit: number;
@@ -57,8 +55,6 @@ export const POLICIES: Record<PolicyName, Policy> = {
   // a 202 "tx_pending" response — give it room without letting a script
   // hammer the route.
   pool_record_deploy_user: { limit: 20, windowSeconds: 60 },
-  stripe_checkout_user: { limit: 5, windowSeconds: 600 },
-  stripe_portal_user: { limit: 5, windowSeconds: 600 },
 };
 
 export interface RateLimitResult {

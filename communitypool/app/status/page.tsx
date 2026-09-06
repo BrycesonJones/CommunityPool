@@ -76,10 +76,10 @@ export default function StatusPage() {
             Docs
           </Link>
           <Link
-            href="/pricing"
+            href="/fees"
             className="text-sm font-medium text-zinc-400 hover:text-white transition-colors focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 focus:ring-offset-black rounded px-3 py-2"
           >
-            Pricing
+            Fees
           </Link>
           <Link
             href="/status"

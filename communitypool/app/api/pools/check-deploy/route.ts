@@ -10,25 +10,21 @@ import {
 } from "@/lib/security/security-event";
 import {
   checkDeployEligibility,
-  FREE_POOL_LIMIT,
   type CheckDeployResult,
 } from "@/lib/pools/deploy-eligibility";
 
 /**
  * `POST /api/pools/check-deploy`
  *
- * Server-side preflight gate for pool deployment. Resolves Pro entitlement
- * from `user_billing_state` (Stripe-driven; see lib/stripe/subscription.ts)
- * and counts the user's existing deployed pools on the expected chain. Free
- * users are capped at FREE_POOL_LIMIT; Pro users are unlimited.
+ * Server-side preflight for pool deployment. Confirms the caller holds a
+ * valid Supabase session before the client opens a wallet signature prompt,
+ * and returns the user's verified deployed-pool count on the expected chain
+ * for display. There is no plan or subscription check — every authenticated
+ * user may deploy an unlimited number of pools.
  *
  * The chain id is read from the server-side env (`NEXT_PUBLIC_EXPECTED_CHAIN_ID`)
- * rather than from the request body so a client cannot pick a different
- * chain to dodge the limit. The user id is read from the Supabase session,
- * never from the request body.
- *
- * Closes OWASP A06 F-02 (pricing claimed "Unlimited pools" with no
- * server-side enforcement).
+ * rather than from the request body. The user id is read from the Supabase
+ * session, never from the request body.
  */
 export async function POST(request: Request): Promise<NextResponse> {
   const ctx = requestContextForSecurityEvent(request);
@@ -46,9 +42,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     });
     const body: CheckDeployResult = {
       allowed: false,
-      plan: "free",
       deployedPoolCount: 0,
-      freePoolLimit: FREE_POOL_LIMIT,
       reason: "authentication_required",
     };
     return NextResponse.json(body, { status: 401 });

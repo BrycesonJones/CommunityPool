@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useCallback, useEffect, useMemo } from "react";
-import Link from "next/link";
 import { getAddress, isAddress } from "ethers";
 import { useWallet } from "@/components/wallet-provider";
 import { formatUnits } from "ethers";
@@ -111,7 +110,6 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
   const [fundTxHash, setFundTxHash] = useState<string | null>(null);
   const [deployedAddress, setDeployedAddress] = useState<string | null>(null);
   const [feeWarning, setFeeWarning] = useState<string | null>(null);
-  const [planLimitBlocked, setPlanLimitBlocked] = useState(false);
 
   const erc20Presets = useMemo(
     () => getErc20PresetsForDeployModal(chainId),
@@ -210,7 +208,6 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
     setFundTxHash(null);
     setDeployedAddress(null);
     setFeeWarning(null);
-    setPlanLimitBlocked(false);
   }, []);
 
   useEffect(() => {
@@ -290,7 +287,6 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
 
   async function runDeploy() {
     setDeployError(null);
-    setPlanLimitBlocked(false);
     if (!isConnected || !signer || chainId === null) {
       await postClientSecurityEvent({
         event_type: "pool.deploy.failed",
@@ -337,10 +333,9 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
       // Profile lookup unavailable — allow the deploy to proceed rather than
       // hard-blocking on a transient Supabase error.
     }
-    // Server-side preflight: confirms the user is authenticated, resolves
-    // Pro entitlement from Stripe-driven billing state, and counts deployed
-    // pools. Free users are capped at FREE_POOL_LIMIT. Block here so the
-    // wallet signature prompt never opens when the user is over the limit.
+    // Server-side preflight: confirms the user still holds a valid session
+    // before the wallet signature prompt opens. There is no plan or pool
+    // limit — every authenticated user can deploy unlimited pools.
     try {
       const res = await fetch("/api/pools/check-deploy", { method: "POST" });
       if (res.status === 401) {
@@ -349,18 +344,18 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
       }
       if (!res.ok) {
         setDeployError(
-          "Could not verify your plan eligibility. Please try again.",
+          "Could not verify deploy eligibility. Please try again.",
         );
         return;
       }
       const result = (await res.json()) as CheckDeployResult;
       if (!result.allowed) {
-        setPlanLimitBlocked(true);
+        setDeployError("Sign in to deploy a pool.");
         return;
       }
     } catch {
       setDeployError(
-        "Could not verify your plan eligibility. Please try again.",
+        "Could not verify deploy eligibility. Please try again.",
       );
       return;
     }
@@ -602,7 +597,7 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
     } else if (step === 4) {
       const partialFail = Boolean(deployedAddress && deployError);
       const ok = Boolean(deployedAddress && !deployError);
-      if (ok || partialFail || planLimitBlocked) {
+      if (ok || partialFail) {
         onClose();
         resetForm();
         return;
@@ -642,7 +637,7 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
     step === 3
       ? "Review"
       : step === 4
-        ? success || partialFail || planLimitBlocked
+        ? success || partialFail
           ? "Close"
           : "Deploy"
         : "Continue";
@@ -899,22 +894,6 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
                       <p className="text-zinc-500 text-xs mt-1">
                         Use Fund a Pool to retry funding this deployed pool.
                       </p>
-                    </div>
-                  )}
-                  {planLimitBlocked && (
-                    <div
-                      className="mt-4 rounded-lg border border-blue-700/50 bg-blue-950/30 p-3 text-sm"
-                      role="alert"
-                    >
-                      <p className="text-blue-200 font-medium">
-                        Free plan limit reached. Upgrade to Pro for unlimited pools.
-                      </p>
-                      <Link
-                        href="/pricing"
-                        className="mt-2 inline-flex items-center justify-center rounded-full bg-gradient-to-b from-blue-400 via-blue-500 to-blue-700 px-4 py-2 text-xs font-medium text-white shadow-lg shadow-blue-500/30 hover:from-blue-300 hover:via-blue-400 hover:to-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 focus:ring-offset-zinc-950"
-                      >
-                        Upgrade to Pro
-                      </Link>
                     </div>
                   )}
                   {deployError && (

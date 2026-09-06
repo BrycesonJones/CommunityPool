@@ -3,23 +3,23 @@
  *
  * Asserts:
  *   - unauthenticated users receive 401 with reason=authentication_required
- *   - the authenticated path returns the eligibility helper's result verbatim
+ *   - the authenticated path returns the eligibility helper's result verbatim,
+ *     and that result is `allowed: true` for any pool count — there is no
+ *     plan, subscription, or pool-limit gate
+ *   - the user id passed to the helper comes from the SESSION, never from
+ *     the request body
  *
  * This is the *trust boundary* test — if the route ever stops calling
- * `supabase.auth.getUser()` or starts trusting a user_id from the request body,
- * F-02 regresses. The eligibility helper itself is exercised in
- * test/app/deploy-eligibility.test.ts; here we only verify the wiring.
+ * `supabase.auth.getUser()` or starts trusting a user_id from the request
+ * body, the auth preflight regresses. The eligibility helper itself is
+ * exercised in test/app/deploy-eligibility.test.ts; here we only verify the
+ * wiring.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Force the chain-id env to a valid testnet value before the route module
-// imports `expected-chain.ts` (which throws in production without it).
 process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "11155111";
 
-// `vi.mock` factories are hoisted to the top of the file before any other
-// code runs, so any value the factory closes over must also be hoisted.
-// `vi.hoisted` is the supported way to express that.
 const { getUserMock, checkDeployEligibilityMock } = vi.hoisted(() => ({
   getUserMock: vi.fn(),
   checkDeployEligibilityMock: vi.fn(),
@@ -28,13 +28,10 @@ const { getUserMock, checkDeployEligibilityMock } = vi.hoisted(() => ({
 vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => ({
     auth: { getUser: getUserMock },
-    // The real eligibility helper would query these tables; we stub the
-    // helper directly below so this client object only needs to exist.
     from: () => ({
       select: () => ({
         eq: () => ({
-          maybeSingle: async () => ({ data: null, error: null }),
-          neq: async () => ({ count: 0, error: null }),
+          eq: async () => ({ count: 0, error: null }),
         }),
       }),
     }),
@@ -57,9 +54,15 @@ vi.mock("@/lib/security/rate-limit", () => ({
 
 import { POST } from "@/app/api/pools/check-deploy/route";
 
-function makeReq(): Request {
+function makeReq(body?: unknown): Request {
   return new Request("https://app.example/api/pools/check-deploy", {
     method: "POST",
+    ...(body !== undefined
+      ? {
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }
+      : {}),
   });
 }
 
@@ -77,9 +80,7 @@ describe("POST /api/pools/check-deploy", () => {
     const body = await res.json();
     expect(body).toEqual({
       allowed: false,
-      plan: "free",
       deployedPoolCount: 0,
-      freePoolLimit: 2,
       reason: "authentication_required",
     });
     expect(checkDeployEligibilityMock).not.toHaveBeenCalled();
@@ -87,44 +88,44 @@ describe("POST /api/pools/check-deploy", () => {
     expect(output).toContain("api.auth_required");
   });
 
-  it("returns the helper's allowed result for an authenticated free user under the limit", async () => {
-    getUserMock.mockResolvedValue({ data: { user: { id: "user-a" } } });
+  it.each([0, 1, 2, 3, 40])(
+    "returns allowed=true for an authenticated user with %i pools",
+    async (deployedPoolCount) => {
+      getUserMock.mockResolvedValue({ data: { user: { id: "user-a" } } });
+      checkDeployEligibilityMock.mockResolvedValue({
+        allowed: true,
+        deployedPoolCount,
+      });
+      const res = await POST(makeReq());
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual({ allowed: true, deployedPoolCount });
+      // No plan / tier / limit fields in the contract.
+      expect(body).not.toHaveProperty("plan");
+      expect(body).not.toHaveProperty("freePoolLimit");
+      expect(body).not.toHaveProperty("reason");
+
+      expect(checkDeployEligibilityMock).toHaveBeenCalledWith(expect.anything(), {
+        userId: "user-a",
+        chainId: 11155111,
+      });
+    },
+  );
+
+  it("ignores any user_id or chain_id supplied in the request body", async () => {
+    getUserMock.mockResolvedValue({ data: { user: { id: "session-user" } } });
     checkDeployEligibilityMock.mockResolvedValue({
       allowed: true,
-      plan: "free",
-      deployedPoolCount: 1,
-      freePoolLimit: 2,
+      deployedPoolCount: 0,
     });
-    const res = await POST(makeReq());
+    const res = await POST(
+      makeReq({ userId: "attacker", user_id: "attacker", chainId: 1, chain_id: 1 }),
+    );
     expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.allowed).toBe(true);
-    expect(body.plan).toBe("free");
-    expect(body.deployedPoolCount).toBe(1);
-
-    // Critical: the route must pass the user id from the SESSION, not from
-    // any request body. There's no request body here, so this just confirms
-    // the call shape.
     expect(checkDeployEligibilityMock).toHaveBeenCalledWith(expect.anything(), {
-      userId: "user-a",
+      userId: "session-user",
       chainId: 11155111,
     });
-  });
-
-  it("returns blocked result for an authenticated free user at the limit", async () => {
-    getUserMock.mockResolvedValue({ data: { user: { id: "user-b" } } });
-    checkDeployEligibilityMock.mockResolvedValue({
-      allowed: false,
-      plan: "free",
-      deployedPoolCount: 2,
-      freePoolLimit: 2,
-      reason: "free_pool_limit_reached",
-    });
-    const res = await POST(makeReq());
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.allowed).toBe(false);
-    expect(body.reason).toBe("free_pool_limit_reached");
   });
 
   it("returns 500 with sanitized error when the helper throws", async () => {
@@ -133,7 +134,6 @@ describe("POST /api/pools/check-deploy", () => {
     const res = await POST(makeReq());
     expect(res.status).toBe(500);
     const body = await res.json();
-    // publicErrorResponse hides internals behind a stable message.
     expect(body.error).toBe("Unable to verify deploy eligibility");
     expect(JSON.stringify(body)).not.toContain("db down");
   });

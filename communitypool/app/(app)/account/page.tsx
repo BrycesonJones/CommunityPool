@@ -3,7 +3,6 @@ import Link from "next/link";
 import { SiteHeader } from "@/components/site-header";
 import { AccountProfileCard } from "./account-profile-card";
 import { AccountSecurityCard } from "./account-security-card";
-import { AccountSubscriptionCard } from "./account-subscription-card";
 
 export const metadata: Metadata = {
   title: "Account | CommunityPool",
@@ -39,7 +38,6 @@ export default function AccountPage() {
         <h1 className="sr-only">Account</h1>
         <AccountProfileCard />
         <AccountSecurityCard />
-        <AccountSubscriptionCard />
       </main>
     </div>
   );

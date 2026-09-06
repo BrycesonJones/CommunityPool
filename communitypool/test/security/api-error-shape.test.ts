@@ -55,7 +55,6 @@ describe("server-only secrets are not imported by client components", () => {
   it("admin/server modules are marked import 'server-only'", () => {
     const targets = [
       "lib/supabase/admin.ts",
-      "lib/stripe/server.ts",
       "lib/onchain/server-providers.ts",
       "lib/security/rate-limit.ts",
       "lib/security/public-error.ts",

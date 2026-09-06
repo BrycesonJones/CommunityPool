@@ -15,7 +15,7 @@ export type ApiError = {
  * JWTs, cookies, OTP codes, KYC data, or secret values to API responses.
  *
  * Server-side log output is run through `redactForLog` so secret-shaped
- * substrings (Stripe `whsec_`/`sk_*`/`cus_`/`sub_`, JWTs, Postgres URLs,
+ * substrings (payment-provider style `whsec_`/`sk_*`/`cus_`/`sub_`, JWTs, Postgres URLs,
  * `Authorization: Bearer …`) are masked before they reach a hosted log
  * collector. The redaction is defence-in-depth — the primary contract is
  * still "don't pass secrets into errors."

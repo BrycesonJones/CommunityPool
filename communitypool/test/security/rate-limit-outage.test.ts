@@ -46,7 +46,7 @@ describe("rate-limit outage handling", () => {
 
     const mod = await import("@/lib/security/rate-limit");
     const res = await mod.enforceRateLimits([
-      { name: "stripe_checkout_user", identifier: "user_1" },
+      { name: "pool_check_deploy_user", identifier: "user_1" },
     ]);
     expect(res?.status).toBe(503);
     const body = await res?.json();

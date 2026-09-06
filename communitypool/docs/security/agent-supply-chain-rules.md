@@ -42,7 +42,6 @@ ask a human, not work around the rule.
 6. **Never expose live secrets to an agent.** Agents must not be given
    read access to:
    - `SUPABASE_SERVICE_ROLE_KEY`,
-   - live (`sk_live_*`) Stripe keys,
    - production Alchemy / Etherscan keys with billing,
    - private keys for any deployer wallet.
    Use Sepolia/test keys when an agent needs to exercise a flow.

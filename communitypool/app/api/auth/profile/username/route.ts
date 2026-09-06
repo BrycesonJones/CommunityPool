@@ -24,7 +24,7 @@ const USERNAME_RE = /^[A-Za-z0-9_.-]{1,40}$/;
  * SDK's `auth.updateUser({ data: { username } })` was previously called from
  * `account-profile-card.tsx` with no length/regex guard — clients could write
  * arbitrary UTF-8 (HTML, control chars, multi-KB blobs) into metadata that
- * is then echoed back across the app and sent to Stripe as `customer.name`.
+ * is then echoed back across the app.
  * Routing through the server lets us re-apply `USERNAME_RE` and use the
  * service-role admin client to update only the authenticated user's metadata.
  *

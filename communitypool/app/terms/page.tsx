@@ -9,7 +9,7 @@ export const metadata: Metadata = {
     "The terms governing your use of CommunityPool — a non-custodial platform for deploying and managing community-owned smart-contract pools.",
 };
 
-const LAST_UPDATED = "April 22, 2026";
+const LAST_UPDATED = "September 5, 2026";
 const LEGAL_ENTITY = "CommunityPool"; // TODO: replace with the legal entity name once formed.
 const CONTACT_EMAIL = "legal@communitypool.app"; // TODO: replace with operating contact email.
 const GOVERNING_JURISDICTION = "the State of Delaware, United States"; // TODO: confirm with counsel.
@@ -25,10 +25,10 @@ export default function TermsPage() {
       <SiteHeader brandHref="/">
         <nav className="flex items-center gap-4">
           <Link
-            href="/pricing"
+            href="/fees"
             className="text-sm font-medium text-zinc-400 hover:text-white transition-colors focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 focus:ring-offset-black rounded px-3 py-2"
           >
-            Pricing
+            Fees
           </Link>
           <Link
             href="/login"
@@ -337,18 +337,22 @@ export default function TermsPage() {
 
           <Section id="fees" number={10} title="Fees and payment">
             <P>
-              The Service offers a Free tier and a Pro tier currently priced at
-              $20 per month, billed in advance. Tier features and pricing are
-              described on our pricing page and may change with notice.
-              Subscription fees are non-refundable except where required by
-              applicable law.
+              Creating an account and deploying Pools is free. There is no
+              subscription, no monthly fee, and no limit on the number of
+              Pools you may deploy. The Service is transitioning to a
+              protocol-fee model under which a percentage of amounts
+              contributed to a Pool may be charged as a protocol fee. No
+              protocol fee is charged until that model is enabled. Any such
+              fee will be described on our fees page and disclosed in the
+              interface before you sign the relevant transaction, and may
+              change with notice.
             </P>
             <P>
               On-chain transactions require gas, which is paid by you in the
               network&rsquo;s native asset and is not collected by, retained
-              by, or refundable from us. We may, at our discretion, charge
-              additional protocol fees that are disclosed in the interface
-              before you sign the relevant transaction.
+              by, or refundable from us. Protocol fees, once charged, are
+              collected on-chain as part of the funding transaction and are
+              non-refundable except where required by applicable law.
             </P>
           </Section>
 
@@ -432,9 +436,9 @@ export default function TermsPage() {
             <P>
               Our aggregate liability for any claim arising out of or relating
               to these Terms or the Service will not exceed the greater of
-              (i) the amount you paid us in subscription fees during the twelve
-              (12) months immediately preceding the event giving rise to the
-              claim and (ii) U.S. $100.
+              (i) the amount you paid us in fees during the twelve (12)
+              months immediately preceding the event giving rise to the claim
+              and (ii) U.S. $100.
             </P>
           </Section>
 

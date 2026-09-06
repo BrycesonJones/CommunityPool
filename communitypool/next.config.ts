@@ -20,7 +20,7 @@ const SECURITY_HEADERS = [
   {
     key: "Permissions-Policy",
     value:
-      'camera=(), microphone=(), geolocation=(), payment=(self "https://js.stripe.com")',
+      "camera=(), microphone=(), geolocation=(), payment=()",
   },
   {
     key: "Cross-Origin-Opener-Policy",
@@ -31,6 +31,11 @@ const SECURITY_HEADERS = [
 const nextConfig: NextConfig = {
   turbopack: {
     root: __dirname,
+  },
+  async redirects() {
+    // The subscription-era Pricing page was retired in favour of the
+    // informational Fees page. Keep the old URL resolving for inbound links.
+    return [{ source: "/pricing", destination: "/fees", permanent: true }];
   },
   async headers() {
     return [

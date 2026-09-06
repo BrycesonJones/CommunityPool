@@ -18,7 +18,7 @@ export default function ApiEndpointsPage() {
       <Callout tone="warn" title="In development">
         <p>
           The endpoint list below is the shipping shape. Paths and
-          payloads are stable intent, but may shift during the Pro launch.
+          payloads are stable intent, but may shift before general availability.
         </p>
       </Callout>
 

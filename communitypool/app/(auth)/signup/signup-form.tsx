@@ -2,15 +2,13 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { sendEmailOtp } from "@/lib/auth/email-verification";
 import GoogleAuthButton from "@/components/google-auth-button";
 
 export default function SignupForm() {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const intent = searchParams.get("intent");
-  const postAuthPath = intent === "subscribe-pro" ? "/billing/start" : "/dashboard";
+  const postAuthPath = "/dashboard";
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});

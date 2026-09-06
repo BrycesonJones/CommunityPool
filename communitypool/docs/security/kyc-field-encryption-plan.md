@@ -16,8 +16,9 @@ Personal data currently stored in `public.user_profiles`:
 * `phone_number`
 * `email`, `username`
 
-Stripe customer / subscription identifiers live in `public.user_billing_state`
-(service-role-only writes; see [`billing-state-rls.test.ts`](../../test/security/billing-state-rls.test.ts)).
+No payment-provider identifiers are stored: CommunityPool has no subscription
+billing (the former `user_billing_state` table was dropped in migration
+`20260905120000_drop_stripe_billing_tables.sql`).
 
 ## Current launch state — acceptable
 
@@ -170,4 +171,4 @@ out of scope until a trigger above fires, because:
 
 * [Mainnet deployment key policy](./mainnet-deployment-key-policy.md)
 * [`.env.example`](../../.env.example) — secret rotation checklist.
-* [`billing-state-rls.test.ts`](../../test/security/billing-state-rls.test.ts) — RLS regression for the related billing-state table.
+* [`no-subscription-gate.test.ts`](../../test/security/no-subscription-gate.test.ts) — regression guard that no plan / subscription gate returns to the app.

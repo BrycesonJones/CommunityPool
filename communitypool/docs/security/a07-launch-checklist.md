@@ -55,17 +55,6 @@ The application has no password login, no service-role bypass, no
 - [ ] Production env does **not** set any environment variable matching
       that pattern.
 
-## Stripe webhook signing
-
-`/api/stripe/webhook` is the only route that runs without a Supabase
-session. It must verify the Stripe signature against the live webhook
-secret, and the route must run on the Node runtime (not Edge) so the
-crypto module is available.
-
-- [ ] `STRIPE_WEBHOOK_SECRET` is set in production and matches the live
-      webhook endpoint configured in the Stripe dashboard.
-- [ ] `app/api/stripe/webhook/route.ts` exports
-      `runtime = "nodejs"` and `dynamic = "force-dynamic"`.
 
 ## Supabase MFA
 

@@ -23,9 +23,6 @@ export type SecurityEvent = {
   chain_id?: number;
   pool_address?: string;
   tx_hash?: string;
-  stripe_event_id?: string;
-  stripe_customer_id_hash?: string;
-  stripe_subscription_id_hash?: string;
   error_code?: string;
   safe_message?: string;
   metadata?: Record<string, unknown>;

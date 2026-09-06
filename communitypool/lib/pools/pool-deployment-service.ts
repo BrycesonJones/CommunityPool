@@ -9,11 +9,12 @@ import { getServerReadOnlyProviderForChain } from "@/lib/onchain/server-provider
  * OWASP A08 F-02 — verified deploy recording.
  *
  * `user_pool_activity` is fully writable by the row owner (RLS:
- * `auth.uid() = user_id`), so a Free user could DELETE their own rows to
- * reset the deploy counter and bypass `FREE_POOL_LIMIT`. The fix is a
- * service-role-only ledger (`user_pool_deployments`) that the eligibility
- * helper reads from instead. Rows land here only after this module has
- * verified the deploy transaction on-chain:
+ * `auth.uid() = user_id`), so a user could rewrite their own rows and the
+ * activity table could never be trusted as a record of what was actually
+ * deployed. The fix is a service-role-only ledger (`user_pool_deployments`)
+ * that server code reads from instead (the deploy preflight reports its
+ * count; nothing gates on it — there is no per-plan pool limit). Rows land
+ * here only after this module has verified the deploy transaction on-chain:
  *
  *   1. tx receipt exists on the supplied chain
  *   2. tx succeeded (status === 1)

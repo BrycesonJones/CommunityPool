@@ -37,9 +37,8 @@ export default function ApiAuthenticationPage() {
         </li>
         <li>
           <strong>Scope.</strong> Keys inherit the permissions of the
-          account that owns them. If the Pro subscription lapses, all keys
-          owned by that account stop working until the subscription
-          resumes.
+          account that owns them. Deleting the account revokes every key it
+          owns.
         </li>
       </ul>
 

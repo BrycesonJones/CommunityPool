@@ -48,8 +48,10 @@ export default function ApiOverviewPage() {
           each flow (including how to get Sepolia test ETH).
         </li>
         <li>
-          <strong>Not a free tier.</strong> Keys require a Pro subscription.
-          See <Link href="/pricing">pricing</Link>.
+          <strong>Not a paid add-on.</strong> CommunityPool has no
+          subscription. API keys will be available to every account once the
+          API ships; see <Link href="/fees">fees</Link> for how the product
+          is funded.
         </li>
       </ul>
 

@@ -9,12 +9,11 @@ export const metadata: Metadata = {
     "How CommunityPool collects, uses, shares, and protects your personal information.",
 };
 
-const LAST_UPDATED = "April 22, 2026";
+const LAST_UPDATED = "September 5, 2026";
 const LEGAL_ENTITY = "CommunityPool"; // TODO: replace with the legal entity name once formed.
 const CONTACT_EMAIL = "privacy@communitypool.app"; // TODO: replace with operating contact email.
 const COMPANY_ADDRESS = "[Company mailing address]"; // TODO: add postal address for privacy notices.
-const KYC_VENDOR = "our identity-verification provider"; // TODO: name the KYC vendor (e.g., Persona, Onfido, Stripe Identity).
-const PAYMENT_PROCESSOR = "our payment processor"; // TODO: name the payment processor (e.g., Stripe).
+const KYC_VENDOR = "our identity-verification provider"; // TODO: name the KYC vendor (e.g., Persona, Onfido).
 const ANALYTICS_VENDOR = "our product-analytics provider"; // TODO: name the analytics vendor or remove if none.
 
 export default function PrivacyPage() {
@@ -27,10 +26,10 @@ export default function PrivacyPage() {
       <SiteHeader brandHref="/">
         <nav className="flex items-center gap-4">
           <Link
-            href="/pricing"
+            href="/fees"
             className="text-sm font-medium text-zinc-400 hover:text-white transition-colors focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 focus:ring-offset-black rounded px-3 py-2"
           >
-            Pricing
+            Fees
           </Link>
           <Link
             href="/login"
@@ -179,12 +178,6 @@ export default function PrivacyPage() {
                 complete KYC.
               </Li>
               <Li>
-                <B>Payment processor</B> — for paid subscriptions, we receive
-                billing status, last four digits of card, expiration date, and
-                similar information from {PAYMENT_PROCESSOR}. We do not
-                receive or store full payment-card numbers.
-              </Li>
-              <Li>
                 <B>Public blockchain data</B> — balances, transactions, and
                 contract interactions associated with addresses you connect to
                 or that we display in your portfolio.
@@ -202,7 +195,6 @@ export default function PrivacyPage() {
             <Ul>
               <Li>Provide, maintain, and improve the Service, including authenticating sessions, presenting your portfolio, and recording your Pool activity;</Li>
               <Li>Verify your identity and meet our regulatory and contractual obligations, including KYC, sanctions screening, and recordkeeping;</Li>
-              <Li>Process subscription payments and manage your account on the applicable tier;</Li>
               <Li>Detect, investigate, and prevent fraud, security incidents, prohibited activity, and violations of our Terms;</Li>
               <Li>Communicate with you about the Service, including service announcements, security notices, support responses, and — where you have consented or where permitted — marketing messages;</Li>
               <Li>Generate aggregated or de-identified analytics that do not identify you;</Li>
@@ -228,11 +220,11 @@ export default function PrivacyPage() {
             <Ul>
               <Li>
                 <B>Service providers and processors.</B> Hosting, database,
-                authentication, identity verification, payments, customer
-                support, email delivery, analytics, and security vendors that
-                process personal information on our behalf under contract,
-                including but not limited to {KYC_VENDOR}, {PAYMENT_PROCESSOR},
-                Supabase (authentication and database), our hosting provider,
+                authentication, identity verification, customer support,
+                email delivery, analytics, and security vendors that process
+                personal information on our behalf under contract, including
+                but not limited to {KYC_VENDOR}, Supabase (authentication and
+                database), our hosting provider,
                 and {ANALYTICS_VENDOR}.
               </Li>
               <Li>
@@ -441,8 +433,8 @@ export default function PrivacyPage() {
               The Service integrates with and links to third-party services,
               including self-custodied wallets (such as MetaMask, Coinbase
               Wallet, and Binance Wallet), public blockchains, price oracles
-              (including Chainlink), block explorers, KYC providers, and
-              payment processors. We are not responsible for the privacy
+              (including Chainlink), block explorers, and KYC providers. We
+              are not responsible for the privacy
               practices of those services. Their handling of your information
               is governed by their own privacy policies, and you should review
               them.

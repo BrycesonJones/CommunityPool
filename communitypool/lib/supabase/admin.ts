@@ -6,7 +6,8 @@ let cached: ReturnType<typeof createSupabaseClient<Database>> | null = null;
 
 /**
  * Service-role Supabase client for server-only contexts where there is no
- * authenticated user session — e.g. the Stripe webhook handler. Bypasses RLS.
+ * authenticated user session — e.g. /api/pools/record-deployment, which
+ * verifies an on-chain receipt and then writes the deployment ledger. Bypasses RLS.
  * Never import from a client component or route that runs in the browser.
  */
 export function createAdminClient() {

@@ -50,7 +50,7 @@ describe("middleware updateSession — protected route coverage", () => {
       expect(url.searchParams.get("next")).toBe(pathname);
     });
 
-    it.each(["/", "/pricing", "/login", "/signup", "/auth/verify", "/privacy"])(
+    it.each(["/", "/fees", "/login", "/signup", "/auth/verify", "/privacy"])(
       "passes through public path %s without redirecting",
       async (pathname) => {
         const res = await run(pathname);
@@ -138,7 +138,7 @@ describe("middleware updateSession — protected route coverage", () => {
     it("does not block a public path", async () => {
       vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "");
       vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "");
-      const res = await run("/pricing");
+      const res = await run("/fees");
       expect(res.status).not.toBe(503);
     });
   });

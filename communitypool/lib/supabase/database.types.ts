@@ -210,45 +210,6 @@ export type Database = {
         }
         Relationships: []
       }
-      user_billing_state: {
-        Row: {
-          created_at: string
-          stripe_customer_id: string | null
-          stripe_subscription_id: string | null
-          subscription_cancel_at_period_end: boolean
-          subscription_current_period_end: string | null
-          subscription_interval: string | null
-          subscription_plan: string
-          subscription_status: string | null
-          updated_at: string
-          user_id: string
-        }
-        Insert: {
-          created_at?: string
-          stripe_customer_id?: string | null
-          stripe_subscription_id?: string | null
-          subscription_cancel_at_period_end?: boolean
-          subscription_current_period_end?: string | null
-          subscription_interval?: string | null
-          subscription_plan?: string
-          subscription_status?: string | null
-          updated_at?: string
-          user_id: string
-        }
-        Update: {
-          created_at?: string
-          stripe_customer_id?: string | null
-          stripe_subscription_id?: string | null
-          subscription_cancel_at_period_end?: boolean
-          subscription_current_period_end?: string | null
-          subscription_interval?: string | null
-          subscription_plan?: string
-          subscription_status?: string | null
-          updated_at?: string
-          user_id?: string
-        }
-        Relationships: []
-      }
       user_profiles: {
         Row: {
           address_line1: string | null
@@ -297,48 +258,6 @@ export type Database = {
           state?: string | null
           updated_at?: string
           username?: string
-        }
-        Relationships: []
-      }
-      stripe_processed_events: {
-        Row: {
-          created_at: string
-          decision: string
-          event_created: number
-          event_id: string
-          event_type: string
-          processed_at: string | null
-          reason: string | null
-          received_at: string
-          stripe_customer_id_hash: string | null
-          stripe_subscription_id_hash: string | null
-          updated_at: string
-        }
-        Insert: {
-          created_at?: string
-          decision: string
-          event_created: number
-          event_id: string
-          event_type: string
-          processed_at?: string | null
-          reason?: string | null
-          received_at?: string
-          stripe_customer_id_hash?: string | null
-          stripe_subscription_id_hash?: string | null
-          updated_at?: string
-        }
-        Update: {
-          created_at?: string
-          decision?: string
-          event_created?: number
-          event_id?: string
-          event_type?: string
-          processed_at?: string | null
-          reason?: string | null
-          received_at?: string
-          stripe_customer_id_hash?: string | null
-          stripe_subscription_id_hash?: string | null
-          updated_at?: string
         }
         Relationships: []
       }

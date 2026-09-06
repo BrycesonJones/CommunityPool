@@ -26,6 +26,15 @@ forge script script/Interactions.s.sol:WithdrawCommunityPool --rpc-url "$SEPOLIA
 
 Frontend: for local Anvil, set `NEXT_PUBLIC_LOCAL_ETH_USD_FEED` to your mock ETH/USD aggregator. On Sepolia, optional WBTC-style pools use `NEXT_PUBLIC_SEPOLIA_WBTC_TOKEN`, `NEXT_PUBLIC_SEPOLIA_WBTC_USD_FEED`, and `NEXT_PUBLIC_SEPOLIA_WBTC_DECIMALS`.
 
+## Pricing model
+
+CommunityPool has no monthly subscription. There are no Free/Pro tiers and no
+per-plan limit on how many pools an account can deploy — every authenticated
+user can deploy CommunityPools without a paid plan. The product is
+transitioning to a protocol funding-fee model; the on-chain fee is not yet
+implemented or deployed, so 100% of every contribution currently stays in the
+pool. See the in-app Fees page (`/fees`) for the user-facing copy.
+
 ## Getting Started
 
 First, run the development server:
