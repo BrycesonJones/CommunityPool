@@ -47,6 +47,9 @@ jobs:
       - name: Install (deterministic, no install scripts)
         run: npm ci --ignore-scripts
 
+      - name: Frozen V1 production artifact guard
+        run: npm run contracts:check-v1-frozen
+
       - name: Production-only audit (high+)
         run: npm audit --audit-level=high --omit=dev
 
@@ -113,6 +116,9 @@ jobs:
           forge --version
           git submodule status --recursive
 
+      - name: Solidity formatting
+        run: forge fmt --check
+
       - name: Forge clean build (canonical)
         run: |
           forge clean
@@ -121,16 +127,20 @@ jobs:
       - name: Forge tests
         run: forge test -vvv
 
-      - name: Regenerate contract artifact from the clean build
+      - name: Regenerate candidate contract artifacts from the clean build
         run: node scripts/sync-contract-artifact.mjs
 
-      - name: Artifact integrity gate (committed artifact must equal the clean build)
+      - name: Artifact integrity gate (committed candidates must equal the clean build)
         run: |
-          # Independent stale-artifact check: compare the regenerated file
-          # against what was committed at this SHA. Fails if CommunityPool.sol,
-          # a dependency, or the canonical build configuration changed without
-          # the artifact being regenerated and reviewed.
-          git diff --exit-code -- lib/onchain/community-pool-artifact.json
+          # Independent stale-artifact check: compare the regenerated candidate
+          # files against what was committed at this SHA. Fails if
+          # CommunityPool.sol, ProtocolConfig.sol, a dependency, or the canonical
+          # build configuration changed without the candidates being regenerated
+          # and reviewed. The frozen V1 production artifact is never regenerated
+          # here; its hash is guarded separately in the node job.
+          git diff --exit-code -- \
+            lib/onchain/community-pool-v2-candidate-artifact.json \
+            lib/onchain/protocol-config-candidate-artifact.json
 
   ci-summary:
     name: CI summary

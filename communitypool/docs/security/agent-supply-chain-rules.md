@@ -108,7 +108,7 @@ When a human has approved adding a package, the agent should:
 
 The CI `node` job additionally fails on any high/critical production
 advisory from `npm audit --audit-level=high --omit=dev`. The `contracts`
-job fails if `lib/onchain/community-pool-artifact.json` does not match
+job fails if the committed contract artifacts (`lib/onchain/community-pool-v1-artifact.json` frozen-hash guard; `lib/onchain/*-candidate-artifact.json` regenerated from the clean build) does not match
 the freshly built `forge-out/CommunityPool.sol/CommunityPool.json`.
 
 ## Reporting a suspected supply-chain compromise

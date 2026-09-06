@@ -44,7 +44,7 @@ import {
   withdrawPoolTokenAmount,
 } from "@/lib/onchain/community-pool";
 import { weiForUsdContribution } from "@/lib/onchain/price-math";
-import artifact from "@/lib/onchain/community-pool-artifact.json";
+import artifact from "@/lib/onchain/community-pool-v1-artifact.json";
 
 const CHAIN_ID = 31337n; // Anvil default; the only local chain pool-chain-config knows
 const POOL = "0x00000000000000000000000000000000000000A1";

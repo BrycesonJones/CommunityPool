@@ -3,6 +3,7 @@ pragma solidity ^0.8.18;
 
 import {Script, console} from "forge-std/Script.sol";
 import {CommunityPool} from "../src/CommunityPool.sol";
+import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {HelperConfig} from "./HelperConfig.s.sol";
 
 /// @dev Default ERC20 whitelist matches `lib/onchain/pool-chain-config.ts` (WBTC + PAXG + XAU₮ on
@@ -29,11 +30,38 @@ contract DeployCommunityPool is Script {
 
         CommunityPool.TokenConfig[] memory tokenConfigs = _defaultTokenConfigs();
 
+        address protocolConfig = _resolveProtocolConfig();
+
         vm.startBroadcast();
-        CommunityPool pool = new CommunityPool(name, description, minUsd, coOwners, expiresAt, ethUsdFeed, tokenConfigs);
+        CommunityPool pool =
+            new CommunityPool(name, description, minUsd, coOwners, expiresAt, ethUsdFeed, tokenConfigs, protocolConfig);
         vm.stopBroadcast();
         console.log("CommunityPool deployed at:", address(pool));
         return pool;
+    }
+
+    /// @dev Every V2 pool must point at the official ProtocolConfig for its chain. On mainnet
+    /// and Sepolia that address MUST be supplied explicitly (PROTOCOL_CONFIG_ADDRESS); there is
+    /// no placeholder and nothing is hardcoded. On a local chain, if no address is supplied, a
+    /// throwaway fixture config is deployed whose admin/recipient default to the broadcaster.
+    function _resolveProtocolConfig() internal returns (address) {
+        address configured = vm.envOr("PROTOCOL_CONFIG_ADDRESS", address(0));
+        if (configured != address(0)) {
+            require(configured.code.length > 0, "PROTOCOL_CONFIG_ADDRESS has no code");
+            return configured;
+        }
+        require(
+            block.chainid != 1 && block.chainid != 11155111,
+            "PROTOCOL_CONFIG_ADDRESS is required on mainnet and Sepolia"
+        );
+        address admin = vm.envOr("PROTOCOL_ADMIN", msg.sender);
+        address recipient = vm.envOr("PROTOCOL_FEE_RECIPIENT", msg.sender);
+        uint256 feeBps = vm.envOr("PROTOCOL_FEE_BPS", uint256(100));
+        vm.startBroadcast();
+        ProtocolConfig fixture = new ProtocolConfig(admin, recipient, feeBps);
+        vm.stopBroadcast();
+        console.log("Local fixture ProtocolConfig deployed at:", address(fixture));
+        return address(fixture);
     }
 
     function _defaultTokenConfigs() internal view returns (CommunityPool.TokenConfig[] memory) {

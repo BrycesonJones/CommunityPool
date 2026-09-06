@@ -5,6 +5,7 @@ import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interf
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {PriceConverter} from "./PriceConverter.sol";
+import {IProtocolConfig} from "./interfaces/IProtocolConfig.sol";
 
 error CommunityPool__NotOwner();
 error CommunityPool__PoolExpired();
@@ -18,6 +19,7 @@ error CommunityPool__WithdrawDisabledAfterExpiry();
 error CommunityPool__InvalidWithdrawAmount();
 error CommunityPool__InsufficientBalance();
 error CommunityPool__EthTransferFailed();
+error CommunityPool__ProtocolConfigNotContract();
 
 /// @title CommunityPool
 /// @notice ETH + whitelisted ERC20 funding with USD minimums via Chainlink. Any owner may withdraw
@@ -25,6 +27,16 @@ error CommunityPool__EthTransferFailed();
 /// releaseExpiredFundsToDeployer to send all remaining assets to the immutable deployer.
 /// @dev Pool name, description, and per-funder accounting are not stored on-chain — consume
 /// `PoolCreated`, `Funded`, and `FundedERC20` events for those.
+///
+/// Protocol configuration (V2 candidate): each pool holds an immutable reference to the shared
+/// `ProtocolConfig` for its chain and reads the current protocol fee rate and fee recipient from
+/// it on demand. Values are never snapshotted into the pool, so one admin change on the shared
+/// config is observed by every pool. In this contract version the configuration is READ ONLY:
+/// `fund` and `fundERC20` still retain 100% of every contribution and nothing is ever sent to
+/// the fee recipient. Fee collection is a later, separately reviewed change.
+///
+/// The ProtocolConfig admin has no authority here: it is not an owner, cannot withdraw, and
+/// cannot change expiry, minimums, owners, or the token allowlist.
 contract CommunityPool {
     using PriceConverter for uint256;
     using SafeERC20 for IERC20;
@@ -47,6 +59,10 @@ contract CommunityPool {
     address public immutable deployer;
     AggregatorV3Interface private immutable i_ethUsdFeed;
 
+    /// @notice Shared protocol configuration this pool reads fee parameters from. Immutable: a
+    /// pool can never be re-pointed at a different configuration.
+    IProtocolConfig public immutable protocolConfig;
+
     mapping(address => bool) private s_isOwner;
     mapping(address => TokenInfo) private s_tokenInfo;
     address[] private s_whitelistedTokens;
@@ -58,7 +74,8 @@ contract CommunityPool {
         uint256 minimumUsd,
         uint64 expiresAt,
         address[] coOwners,
-        address[] whitelistedTokens
+        address[] whitelistedTokens,
+        address indexed protocolConfig
     );
     event Funded(address indexed funder, uint256 amount);
     event FundedERC20(address indexed token, address indexed funder, uint256 amount);
@@ -72,13 +89,22 @@ contract CommunityPool {
         address[] memory coOwners,
         uint64 expiresAt_,
         address ethUsdFeed,
-        TokenConfig[] memory tokenConfigs
+        TokenConfig[] memory tokenConfigs,
+        address protocolConfig_
     ) {
         if (ethUsdFeed == address(0)) revert CommunityPool__ZeroAddress();
+        if (protocolConfig_ == address(0)) revert CommunityPool__ZeroAddress();
+        // The reference is immutable and, once fee collection exists, `fund` paths will call
+        // into it on every contribution. A pool bound to an address with no code would have
+        // every future fee-aware funding call revert on the missing return data, bricking the
+        // pool permanently. Requiring deployed code at construction catches a mistyped or
+        // not-yet-deployed config address at the only moment it can still be corrected.
+        if (protocolConfig_.code.length == 0) revert CommunityPool__ProtocolConfigNotContract();
         deployer = msg.sender;
         minimumUsd = minimumUsd_;
         expiresAt = expiresAt_;
         i_ethUsdFeed = AggregatorV3Interface(ethUsdFeed);
+        protocolConfig = IProtocolConfig(protocolConfig_);
 
         s_isOwner[msg.sender] = true;
 
@@ -112,7 +138,9 @@ contract CommunityPool {
             }
         }
 
-        emit PoolCreated(msg.sender, name_, description_, minimumUsd_, expiresAt_, coOwners, tokenAddrs);
+        emit PoolCreated(
+            msg.sender, name_, description_, minimumUsd_, expiresAt_, coOwners, tokenAddrs, protocolConfig_
+        );
     }
 
     modifier onlyOwner() {
@@ -149,6 +177,15 @@ contract CommunityPool {
 
     function getWhitelistedTokens() external view returns (address[] memory) {
         return s_whitelistedTokens;
+    }
+
+    /// @notice Current protocol fee parameters, read live from the shared ProtocolConfig.
+    /// @dev Informational in this contract version: no fee is deducted or transferred yet.
+    /// @return feeBps Protocol fee in basis points (10_000 bps == 100%).
+    /// @return recipient Address that will receive protocol fees once collection is enabled.
+    function getProtocolFeeConfig() external view returns (uint256 feeBps, address recipient) {
+        feeBps = protocolConfig.protocolFeeBps();
+        recipient = protocolConfig.feeRecipient();
     }
 
     function fund() public payable notExpiredForFunding {

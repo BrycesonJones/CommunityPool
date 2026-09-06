@@ -94,7 +94,7 @@ describe("community-pool helpers: ERC20 ABI surface", () => {
  */
 describe("CommunityPool artifact: fund vs fundERC20 mutability", () => {
   it("fund() is payable and fundERC20(address,uint256) is nonpayable", async () => {
-    const artifact = (await import("@/lib/onchain/community-pool-artifact.json"))
+    const artifact = (await import("@/lib/onchain/community-pool-v1-artifact.json"))
       .default as { abi: ReadonlyArray<unknown> };
     const iface = new Interface(artifact.abi as never);
 
@@ -108,7 +108,7 @@ describe("CommunityPool artifact: fund vs fundERC20 mutability", () => {
   });
 
   it("constructor is nonpayable so deploy never silently attaches msg.value", async () => {
-    const artifact = (await import("@/lib/onchain/community-pool-artifact.json"))
+    const artifact = (await import("@/lib/onchain/community-pool-v1-artifact.json"))
       .default as { abi: ReadonlyArray<{ type: string; stateMutability?: string }> };
     const ctor = artifact.abi.find((f) => f.type === "constructor");
     expect(ctor).toBeDefined();

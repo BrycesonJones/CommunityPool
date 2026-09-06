@@ -12,6 +12,7 @@ import {
     CommunityPool__PoolExpired,
     CommunityPool__WithdrawDisabledAfterExpiry
 } from "../src/CommunityPool.sol";
+import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {MockV3Aggregator} from "./pricefeeds/V3Aggregator.sol";
 import {MockMintableERC20} from "./MockMintableERC20.sol";
 
@@ -22,6 +23,7 @@ contract CommunityPoolTest is Test {
     receive() external payable {}
 
     CommunityPool internal pool;
+    ProtocolConfig internal protocolConfig;
     MockV3Aggregator internal ethFeed;
     MockV3Aggregator internal tokenFeed;
     MockMintableERC20 internal token;
@@ -44,7 +46,8 @@ contract CommunityPoolTest is Test {
         address[] memory cos = new address[](1);
         cos[0] = address(0xCAFE);
 
-        pool = new CommunityPool("Alpha", "desc", 5e18, cos, expiresAt, address(ethFeed), tks);
+        protocolConfig = new ProtocolConfig(makeAddr("protocolAdmin"), makeAddr("treasury"), 100);
+        pool = new CommunityPool("Alpha", "desc", 5e18, cos, expiresAt, address(ethFeed), tks, address(protocolConfig));
 
         vm.deal(USER, STARTING_BALANCE);
         token.mint(USER, 1e12);

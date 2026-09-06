@@ -130,7 +130,7 @@ async function main() {
     process.exit(1);
   }
 
-  const artifactPath = path.join(root, "lib", "onchain", "community-pool-artifact.json");
+  const artifactPath = path.join(root, "lib", "onchain", "community-pool-v1-artifact.json");
   const artifact = JSON.parse(fs.readFileSync(artifactPath, "utf8"));
   const iface = new Interface(artifact.abi);
 

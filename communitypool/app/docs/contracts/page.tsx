@@ -20,7 +20,7 @@ export default function ContractsReferencePage() {
           Deployed addresses will be tracked here per network once mainnet
           ships. For now, all deployments are on Sepolia. The runtime ABI
           is the <code>abi</code> field of{" "}
-          <code>lib/onchain/community-pool-artifact.json</code>, which CI
+          <code>lib/onchain/community-pool-v1-artifact.json</code>, which CI
           verifies byte-for-byte against <code>forge-out/</code> on every
           push. Older pools deployed before the partial-withdraw functions
           existed are auto-detected at runtime via{" "}
