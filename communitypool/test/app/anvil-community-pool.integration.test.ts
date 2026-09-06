@@ -18,6 +18,15 @@ const FEED = process.env.ANVIL_ETH_USD_FEED?.trim();
 const run = Boolean(RPC && FEED);
 
 /**
+ * `cacheTimeout: -1` disables ethers' short-lived (250 ms) JSON-RPC response
+ * cache. With a local `Wallet` signer on instant-mining Anvil, two txs sent
+ * within that window would otherwise both populate from the same cached
+ * `eth_getTransactionCount` and collide on the nonce. This is identical on
+ * ethers 6.16 and 6.17 and does not affect the app, whose browser wallet
+ * assigns nonces itself.
+ */
+
+/**
  * Integration: start Anvil, deploy a mock ETH/USD feed (e.g. forge script / HelperConfig),
  * set ANVIL_ETH_USD_FEED and ANVIL_RPC_URL, then:
  *   npm run test -- test/app/anvil-community-pool.integration.test.ts
@@ -26,12 +35,12 @@ describe.skipIf(!run)("anvil: deploy CommunityPool + read on-chain snapshot", ()
   beforeAll(() => {
     if (!FEED) return;
     process.env.NEXT_PUBLIC_LOCAL_ETH_USD_FEED = FEED;
-    // Match the chain-id deploy guard: this Anvil instance reports chain 3137.
-    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "3137";
+    // Match the chain-id deploy guard: this Anvil instance reports chain 31337 (Anvil default).
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "31337";
   });
 
   it("deploys a pool and readPoolSnapshotFromChain returns metadata", async () => {
-    const provider = new JsonRpcProvider(RPC!);
+    const provider = new JsonRpcProvider(RPC!, undefined, { cacheTimeout: -1 });
     // Public Anvil default development key (account #0). Funded with
     // 10000 test ETH on every fresh `anvil` run; documented at
     // https://book.getfoundry.sh/anvil/#default-accounts. NOT a secret.
@@ -44,23 +53,27 @@ describe.skipIf(!run)("anvil: deploy CommunityPool + read on-chain snapshot", ()
       "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
     const signer = new Wallet(pk, provider) as unknown as JsonRpcSigner;
     const net = await provider.getNetwork();
-    expect(net.chainId).toBe(3137n);
+    expect(net.chainId).toBe(31337n);
 
-    const { contract } = await deployCommunityPool(signer, {
+    const { contract, deployTx } = await deployCommunityPool(signer, {
       name: "Vitest Pool",
       description: "integration",
       minimumUsdHuman: "5",
       coOwnerAddresses: [],
       expirationDateYmd: "2099-12-31",
     });
+    // Wait for inclusion before reading, exactly as the deploy modal does.
+    const deployReceipt = await deployTx.wait();
+    expect(deployReceipt?.status).toBe(1);
     const addr = await contract.getAddress();
+    expect(deployReceipt?.contractAddress).toBe(addr);
     const snap = await readPoolSnapshotFromChain(provider, addr);
     expect(snap.expiresAtUnix).toBeGreaterThan(Math.floor(Date.now() / 1000));
     expect(snap.minimumUsdWei).toBe("5000000000000000000");
   });
 
   it("readPoolOnChainBalances accumulates across multiple fund txs and reflects withdrawals", async () => {
-    const provider = new JsonRpcProvider(RPC!);
+    const provider = new JsonRpcProvider(RPC!, undefined, { cacheTimeout: -1 });
     // Public Anvil default development key — see note on the previous test.
     // NOT a secret; only valid against a local `anvil` chain. Mainnet must
     // use a hardware wallet or encrypted Foundry keystore.
@@ -71,13 +84,17 @@ describe.skipIf(!run)("anvil: deploy CommunityPool + read on-chain snapshot", ()
     const net = await provider.getNetwork();
     const chainId = Number(net.chainId);
 
-    const { contract } = await deployCommunityPool(signer, {
+    const { contract, deployTx } = await deployCommunityPool(signer, {
       name: "Vitest Pool Funding",
       description: "funding integration",
       minimumUsdHuman: "1",
       coOwnerAddresses: [],
       expirationDateYmd: "2099-12-31",
     });
+    // The app never funds before the deploy receipt lands; a Wallet signer
+    // that sends the next tx before inclusion re-uses the pending nonce on
+    // Anvil (identical on ethers 6.16 and 6.17), so wait here too.
+    await deployTx.wait();
     const addr = await contract.getAddress();
     const fundable = new Contract(addr, FUND_ABI, signer);
 
