@@ -29,8 +29,14 @@ describe("Fees page", () => {
     render(<FeesPage />);
     const text = document.body.textContent ?? "";
     // The launch rate and the hard cap are both stated.
+    expect(text).toMatch(/launch protocol fee/i);
     expect(text).toMatch(/1%/);
     expect(text).toMatch(/3%/);
+    // The rate is not asserted as permanent: it is stated as the launch rate, shown live before
+    // funding, and changeable on-chain under the immutable ceiling.
+    expect(text).toMatch(/current rate is always shown before you confirm|current rate is shown before/i);
+    expect(text).toMatch(/may be changed|can change it/i);
+    expect(text).toMatch(/never exceed the immutable/i);
     // Deducted from the contribution, never added on top.
     expect(text).toMatch(/out of.{0,40}amount you fund|deducted from the contribution/i);
     expect(text).toMatch(/never added on top|not added on top/i);
@@ -82,6 +88,9 @@ describe("Fees page", () => {
   it("uses Fees (not Pricing) in the document title and nav", () => {
     render(<FeesPage />);
     expect(String(metadata.title)).toMatch(/^Fees/);
+    expect(String(metadata.description)).toMatch(/launch protocol fee/i);
+    expect(String(metadata.description)).toMatch(/may be changed on-chain/i);
+    expect(String(metadata.description)).toMatch(/3% maximum/i);
     expect(screen.getByRole("link", { name: "Fees" })).toHaveAttribute("href", "/fees");
     expect(screen.queryByRole("link", { name: /pricing/i })).not.toBeInTheDocument();
   });

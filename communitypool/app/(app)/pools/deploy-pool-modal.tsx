@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useMemo } from "react";
-import { getAddress, isAddress } from "ethers";
+import { getAddress, isAddress, parseUnits } from "ethers";
 import { useWallet } from "@/components/wallet-provider";
 import { formatUnits } from "ethers";
 import { createClient } from "@/lib/supabase/client";
@@ -38,7 +38,13 @@ import {
   sanitizeUsdAmountInputTyping,
   validateUsdAmountInputMessage,
 } from "@/lib/onchain/usd-amount-input";
-import { formatFeeBpsPercent, readChainProtocolFeeBps } from "@/lib/onchain/protocol-fee";
+import {
+  formatFeeBpsPercent,
+  formatTokenAmount,
+  previewFundingSplit,
+  readChainProtocolFeeBps,
+  type FundingSplit,
+} from "@/lib/onchain/protocol-fee";
 import { postClientSecurityEvent } from "@/lib/security/client-security-event";
 
 type Step = 1 | 2 | 3 | 4;
@@ -111,8 +117,21 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
   const [fundTxHash, setFundTxHash] = useState<string | null>(null);
   const [deployedAddress, setDeployedAddress] = useState<string | null>(null);
   const [feeWarning, setFeeWarning] = useState<string | null>(null);
-  /** Live protocol fee for this chain; null until read, and left null if the read fails. */
-  const [protocolFeeBps, setProtocolFeeBps] = useState<bigint | null>(null);
+  /**
+   * Live protocol fee for this chain. Held as state only so a failed read is distinguishable from
+   * a zero rate; the numbers the user sees come from `initialFundSplit`.
+   */
+  const [, setProtocolFeeBps] = useState<bigint | null>(null);
+  const [protocolFeeLoading, setProtocolFeeLoading] = useState(false);
+  /**
+   * Token-native economics of the initial contribution this flow makes right after deployment.
+   * The deploy flow funds without a second review, so the numbers must be shown before the first
+   * wallet prompt, not between the two transactions.
+   */
+  const [initialFundSplit, setInitialFundSplit] = useState<
+    { symbol: string; decimals: number; split: FundingSplit } | null
+  >(null);
+  const [initialFundSplitLoading, setInitialFundSplitLoading] = useState(false);
 
   const erc20Presets = useMemo(
     () => getErc20PresetsForDeployModal(chainId),
@@ -129,37 +148,6 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
    * V2, so every contribution — including the initial deposit in this flow — pays it. Left null on
    * a read failure; the summary then describes the fee without asserting a number.
    */
-  useEffect(() => {
-    let cancelled = false;
-    if (!signer || chainId === null) {
-      setProtocolFeeBps(null);
-      return;
-    }
-    (async () => {
-      try {
-        const cfg = getPoolChainConfig(chainId);
-        if (!cfg.protocolConfig) {
-          if (!cancelled) setProtocolFeeBps(null);
-          return;
-        }
-        const bps = await readChainProtocolFeeBps(signer.provider!, cfg.protocolConfig);
-        if (!cancelled) setProtocolFeeBps(bps);
-      } catch {
-        if (!cancelled) setProtocolFeeBps(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [signer, chainId]);
-
-  const protocolFeeLine = useMemo(() => {
-    if (protocolFeeBps === null) {
-      return "Deducted from each contribution, including your initial deposit (never more than 3%).";
-    }
-    if (protocolFeeBps === BigInt(0)) return "Currently 0% — no protocol fee is charged right now.";
-    return `${formatFeeBpsPercent(protocolFeeBps)} of each contribution, including your initial deposit. Deducted from the amount funded, not added on top.`;
-  }, [protocolFeeBps]);
 
   const minExpirationYmd = getMinExpirationYmd();
 
@@ -167,6 +155,86 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
     const r = normalizeUsdAmountInput(fundAmount);
     return r.ok ? r.canonical : null;
   }, [fundAmount]);
+
+  const loadProtocolFee = useCallback(async (): Promise<bigint | null> => {
+    if (!signer || chainId === null) {
+      setProtocolFeeBps(null);
+      return null;
+    }
+    setProtocolFeeLoading(true);
+    try {
+      const cfg = getPoolChainConfig(chainId);
+      if (!cfg.protocolConfig) {
+        setProtocolFeeBps(null);
+        return null;
+      }
+      const bps = await readChainProtocolFeeBps(signer.provider!, cfg.protocolConfig);
+      setProtocolFeeBps(bps);
+      return bps;
+    } catch {
+      setProtocolFeeBps(null);
+      return null;
+    } finally {
+      setProtocolFeeLoading(false);
+    }
+  }, [signer, chainId]);
+
+  // Depend on stable primitives, not on the callback identity: a wallet provider that hands back
+  // a fresh signer object on each render would otherwise re-fire this effect every render and
+  // hammer the RPC (and flicker the review step back into its loading state).
+  const hasSigner = Boolean(signer);
+  useEffect(() => {
+    void loadProtocolFee();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chainId, hasSigner]);
+
+  /**
+   * Resolve the initial contribution's split for the review step. Deploying immediately proceeds
+   * into a funding transaction, so the flow must not start while the live rate is unknown — a
+   * transient RPC failure asks for a retry instead of deploying a pool and then prompting for a
+   * funding signature with unknown economics.
+   */
+  const loadInitialFundSplit = useCallback(async (): Promise<void> => {
+    setInitialFundSplit(null);
+    if (!signer || chainId === null) return;
+    const canonical = normalizedFundAmount;
+    if (canonical === null) return;
+    setInitialFundSplitLoading(true);
+    try {
+      const bps = await loadProtocolFee();
+      if (bps === null) return;
+      let grossAmount: bigint;
+      let symbol: string;
+      let decimals: number;
+      if (initialFundKind === "eth") {
+        const cfg = getPoolChainConfig(chainId);
+        grossAmount = await weiForUsdContribution(signer, cfg.ethUsdPriceFeed, canonical);
+        symbol = "ETH";
+        decimals = 18;
+      } else {
+        const preset = erc20Presets.find((x) => x.id === initialErc20Selection);
+        if (!preset) return;
+        const human = await erc20UsdToHumanAmountString(signer, preset, canonical);
+        if (human === null) return;
+        grossAmount = parseUnits(human, preset.decimals);
+        symbol = preset.symbol;
+        decimals = preset.decimals;
+      }
+      setInitialFundSplit({ symbol, decimals, split: previewFundingSplit(grossAmount, bps) });
+    } catch {
+      setInitialFundSplit(null);
+    } finally {
+      setInitialFundSplitLoading(false);
+    }
+  }, [
+    signer,
+    chainId,
+    normalizedFundAmount,
+    initialFundKind,
+    initialErc20Selection,
+    erc20Presets,
+    loadProtocolFee,
+  ]);
 
   useEffect(() => {
     if (erc20Presets.length === 0 && initialFundKind === "erc20") {
@@ -248,6 +316,8 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
     setFundTxHash(null);
     setDeployedAddress(null);
     setFeeWarning(null);
+    setInitialFundSplit(null);
+    setInitialFundSplitLoading(false);
   }, []);
 
   useEffect(() => {
@@ -634,12 +704,21 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
     } else if (step === 3) {
       if (!validateStep3()) return;
       setStep(4);
+      void loadInitialFundSplit();
     } else if (step === 4) {
       const partialFail = Boolean(deployedAddress && deployError);
       const ok = Boolean(deployedAddress && !deployError);
       if (ok || partialFail) {
         onClose();
         resetForm();
+        return;
+      }
+      if (!initialFundSplit) {
+        // Deploying proceeds straight into a funding transaction; refuse to start that pair while
+        // the fee is unknown rather than deploying and then prompting with unknown economics.
+        setDeployError(
+          "The current protocol fee could not be read. Retry above before deploying — the deploy flow funds the pool immediately after creating it.",
+        );
         return;
       }
       void runDeploy();
@@ -884,9 +963,73 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
                       <dd className="text-white">{supportedAssetsLine}</dd>
                     </div>
                     <div>
-                      <dt className="text-zinc-500">Protocol fee on funding</dt>
-                      <dd className="text-white">
-                        {protocolFeeLine}
+                      <dt className="text-zinc-500">Initial contribution</dt>
+                      <dd className="mt-1">
+                        {initialFundSplitLoading || protocolFeeLoading ? (
+                          <span className="text-xs text-zinc-500" role="status">
+                            Reading the current protocol fee…
+                          </span>
+                        ) : initialFundSplit ? (
+                          <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3">
+                            <div className="flex justify-between gap-4">
+                              <span className="text-zinc-400">Funding amount</span>
+                              <span className="text-white font-mono">
+                                {formatTokenAmount(
+                                  initialFundSplit.split.grossAmount,
+                                  initialFundSplit.decimals,
+                                )}{" "}
+                                {initialFundSplit.symbol}
+                              </span>
+                            </div>
+                            <div className="mt-1 flex justify-between gap-4">
+                              <span className="text-zinc-400">
+                                Protocol fee ({formatFeeBpsPercent(initialFundSplit.split.feeBps)})
+                              </span>
+                              <span className="text-white font-mono">
+                                {formatTokenAmount(
+                                  initialFundSplit.split.feeAmount,
+                                  initialFundSplit.decimals,
+                                )}{" "}
+                                {initialFundSplit.symbol}
+                              </span>
+                            </div>
+                            <div className="mt-1 flex justify-between gap-4">
+                              <span className="text-zinc-400">Pool receives</span>
+                              <span className="text-white font-mono">
+                                {formatTokenAmount(
+                                  initialFundSplit.split.netAmount,
+                                  initialFundSplit.decimals,
+                                )}{" "}
+                                {initialFundSplit.symbol}
+                              </span>
+                            </div>
+                            <p className="mt-2 text-xs text-zinc-500">
+                              Deploying also funds the pool, so this contribution happens right
+                              after the pool is created. The protocol fee comes out of the amount
+                              funded — it is not added on top. The rate is read from the contract
+                              and can change before your transactions are mined; it can never
+                              exceed the 3% maximum.
+                            </p>
+                          </div>
+                        ) : (
+                          <div
+                            className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3"
+                            role="alert"
+                          >
+                            <p className="text-sm text-amber-400">
+                              Could not read the current protocol fee. Deployment is blocked until
+                              it can be read, so you are never asked to fund a new pool with
+                              unknown economics.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => void loadInitialFundSplit()}
+                              className="mt-2 rounded-lg bg-zinc-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                            >
+                              Retry
+                            </button>
+                          </div>
+                        )}
                       </dd>
                     </div>
                     <div>
@@ -965,7 +1108,12 @@ export default function DeployPoolModal({ open, onClose, onDeployed }: Props) {
           <button
             type="button"
             onClick={handleContinue}
-            disabled={step === 4 && !success && !partialFail && deploying}
+            disabled={
+              step === 4 &&
+              !success &&
+              !partialFail &&
+              (deploying || initialFundSplitLoading || protocolFeeLoading || !initialFundSplit)
+            }
             className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 focus:ring-offset-zinc-950 disabled:opacity-50 disabled:pointer-events-none"
           >
             {deploying ? "Working…" : primaryLabel}

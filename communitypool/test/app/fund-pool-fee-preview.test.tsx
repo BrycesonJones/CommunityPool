@@ -12,10 +12,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 
-const { buildFundingPreviewMock, erc20UsdToHumanMock, weiForUsdMock } = vi.hoisted(() => ({
+const {
+  buildFundingPreviewMock,
+  erc20UsdToHumanMock,
+  weiForUsdMock,
+  readLiveProtocolFeeMock,
+  fundPoolEthMock,
+} = vi.hoisted(() => ({
   buildFundingPreviewMock: vi.fn(),
   erc20UsdToHumanMock: vi.fn(),
   weiForUsdMock: vi.fn(),
+  readLiveProtocolFeeMock: vi.fn(),
+  fundPoolEthMock: vi.fn(),
 }));
 
 vi.mock("@/lib/onchain/price-math", async () => {
@@ -29,7 +37,11 @@ vi.mock("@/lib/onchain/protocol-fee", async () => {
   const actual = await vi.importActual<typeof import("@/lib/onchain/protocol-fee")>(
     "@/lib/onchain/protocol-fee",
   );
-  return { ...actual, buildFundingPreview: buildFundingPreviewMock };
+  return {
+    ...actual,
+    buildFundingPreview: buildFundingPreviewMock,
+    readLiveProtocolFee: readLiveProtocolFeeMock,
+  };
 });
 
 vi.mock("@/lib/onchain/tx-economics", async () => {
@@ -48,7 +60,11 @@ vi.mock("@/lib/onchain/community-pool", async () => {
   const actual = await vi.importActual<typeof import("@/lib/onchain/community-pool")>(
     "@/lib/onchain/community-pool",
   );
-  return { ...actual, getPoolWhitelistedTokenAddresses: async () => [] };
+  return {
+    ...actual,
+    getPoolWhitelistedTokenAddresses: async () => [],
+    fundPoolEth: fundPoolEthMock,
+  };
 });
 
 vi.mock("@/lib/security/client-security-event", () => ({
@@ -87,12 +103,24 @@ async function openReviewStep(amount = "100") {
   fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
 }
 
+const splitAt = (feeBps: bigint, feeAmount: bigint, netAmount: bigint) => ({
+  kind: "split" as const,
+  version: "v2" as const,
+  symbol: "ETH",
+  decimals: 18,
+  split: { grossAmount: 1_000000000000000000n, feeAmount, netAmount, feeBps },
+});
+
+const fundButton = () => screen.getByRole("button", { name: /^fund$/i });
+
 describe("fund modal protocol-fee preview", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "1";
     erc20UsdToHumanMock.mockResolvedValue("1.0");
     weiForUsdMock.mockResolvedValue(1_000000000000000000n);
+    readLiveProtocolFeeMock.mockResolvedValue({ feeBps: 100n, recipient: "0x" + "1".repeat(40) });
+    fundPoolEthMock.mockResolvedValue({ hash: "0x" + "a".repeat(64), wait: async () => ({}) });
   });
   afterEach(() => cleanup());
 
@@ -177,9 +205,10 @@ describe("fund modal protocol-fee preview", () => {
     });
     await openReviewStep();
     expect(await screen.findByText(/could not read this pool/i)).toBeInTheDocument();
-    // No fabricated numbers.
+    // No fabricated numbers, and funding is refused rather than allowed under a generic warning.
     expect(screen.queryByText(/pool receives/i)).not.toBeInTheDocument();
-    expect(document.body.textContent).toMatch(/never more than 3%/i);
+    expect(document.body.textContent).toMatch(/funding is blocked/i);
+    expect(fundButton()).toBeDisabled();
   });
 
   it("previews the exact amount the transaction will send", async () => {
@@ -190,5 +219,115 @@ describe("fund modal protocol-fee preview", () => {
     expect(arg.poolAddress.toLowerCase()).toBe(POOL.toLowerCase());
     expect(typeof arg.grossAmount).toBe("bigint");
     expect(arg.grossAmount > 0n).toBe(true);
+  });
+
+  it("cannot submit while the fee preview is still loading", async () => {
+    let release: (v: unknown) => void = () => {};
+    buildFundingPreviewMock.mockImplementation(
+      () => new Promise((r) => { release = r; }),
+    );
+    await openReviewStep();
+    // Preview outstanding: the button is disabled and no wallet call can happen.
+    await waitFor(() => expect(fundButton()).toBeDisabled());
+    fireEvent.click(fundButton());
+    expect(fundPoolEthMock).not.toHaveBeenCalled();
+    release(splitAt(100n, 10_000000000000000n, 990_000000000000000n));
+    await waitFor(() => expect(fundButton()).toBeEnabled());
+  });
+
+  it("blocks V2 funding when the fee read is unavailable, and offers Retry", async () => {
+    buildFundingPreviewMock.mockResolvedValue({
+      kind: "unavailable",
+      message: "Could not read this pool's current protocol fee from the network.",
+    });
+    await openReviewStep();
+    await waitFor(() => expect(fundButton()).toBeDisabled());
+    fireEvent.click(fundButton());
+    expect(fundPoolEthMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    expect(document.body.textContent).toMatch(/funding is blocked/i);
+  });
+
+  it("recovers through Retry after a failed read", async () => {
+    buildFundingPreviewMock.mockResolvedValueOnce({
+      kind: "unavailable",
+      message: "Could not read this pool's current protocol fee from the network.",
+    });
+    await openReviewStep();
+    await waitFor(() => expect(fundButton()).toBeDisabled());
+    buildFundingPreviewMock.mockResolvedValue(
+      splitAt(100n, 10_000000000000000n, 990_000000000000000n),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+    await waitFor(() => expect(fundButton()).toBeEnabled());
+    expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i);
+  });
+
+  it("lets a V1 pool fund with no fee resolution required", async () => {
+    buildFundingPreviewMock.mockResolvedValue({ kind: "no-fee", version: "v1" });
+    await openReviewStep();
+    await waitFor(() => expect(fundButton()).toBeEnabled());
+    fireEvent.click(fundButton());
+    await waitFor(() => expect(fundPoolEthMock).toHaveBeenCalledTimes(1));
+    // A V1 pool has no ProtocolConfig to re-read before signing.
+    expect(readLiveProtocolFeeMock).not.toHaveBeenCalled();
+  });
+
+  it("funds a V2 pool once the live rate is read and still matches at submit", async () => {
+    buildFundingPreviewMock.mockResolvedValue(
+      splitAt(100n, 10_000000000000000n, 990_000000000000000n),
+    );
+    await openReviewStep();
+    await waitFor(() => expect(fundButton()).toBeEnabled());
+    fireEvent.click(fundButton());
+    await waitFor(() => expect(fundPoolEthMock).toHaveBeenCalledTimes(1));
+    expect(readLiveProtocolFeeMock).toHaveBeenCalled();
+  });
+
+  it("refuses to open the wallet when the rate changed between preview and submit", async () => {
+    buildFundingPreviewMock.mockResolvedValue(
+      splitAt(100n, 10_000000000000000n, 990_000000000000000n),
+    );
+    await openReviewStep();
+    await waitFor(() => expect(fundButton()).toBeEnabled());
+    // Admin moved the rate to 0.75% after the preview was rendered.
+    readLiveProtocolFeeMock.mockResolvedValue({ feeBps: 75n, recipient: "0x" + "1".repeat(40) });
+    buildFundingPreviewMock.mockResolvedValue(
+      splitAt(75n, 7_500000000000000n, 992_500000000000000n),
+    );
+    fireEvent.click(fundButton());
+    await waitFor(() =>
+      expect(document.body.textContent).toMatch(/protocol fee changed/i),
+    );
+    expect(fundPoolEthMock).not.toHaveBeenCalled();
+    // The refreshed economics are on screen; a second, deliberate press now goes through.
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(0\.75%\)/i));
+    fireEvent.click(fundButton());
+    await waitFor(() => expect(fundPoolEthMock).toHaveBeenCalledTimes(1));
+  });
+
+  it("blocks submission when the pre-signature re-read itself fails", async () => {
+    buildFundingPreviewMock.mockResolvedValue(
+      splitAt(100n, 10_000000000000000n, 990_000000000000000n),
+    );
+    await openReviewStep();
+    await waitFor(() => expect(fundButton()).toBeEnabled());
+    readLiveProtocolFeeMock.mockRejectedValue(new Error("rpc down"));
+    fireEvent.click(fundButton());
+    await waitFor(() => expect(document.body.textContent).toMatch(/could not re-check/i));
+    expect(fundPoolEthMock).not.toHaveBeenCalled();
+    await waitFor(() => expect(fundButton()).toBeDisabled());
+  });
+
+  it("never presents the fee as a surcharge on top of the amount funded", async () => {
+    buildFundingPreviewMock.mockResolvedValue(
+      splitAt(100n, 10_000000000000000n, 990_000000000000000n),
+    );
+    await openReviewStep();
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i));
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    expect(text).toMatch(/not added on top/i);
+    expect(text).not.toMatch(/1\.01 ETH/);
+    expect(text).toMatch(/can never exceed the contract.s 3% maximum/i);
   });
 });

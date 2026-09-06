@@ -5,7 +5,7 @@ import { SiteHeader } from "@/components/site-header";
 export const metadata: Metadata = {
   title: "Fees | CommunityPool",
   description:
-    "CommunityPool is free to sign up for and use. There are no monthly subscription fees. A 1% protocol fee is deducted from contributions when a CommunityPool is funded.",
+    "CommunityPool is free to sign up for and use. There are no monthly subscription fees. Launch protocol fee: 1%, deducted from contributions when a CommunityPool is funded. The current rate is shown before funding and may be changed on-chain, subject to the immutable 3% maximum.",
 };
 
 /**
@@ -68,8 +68,12 @@ export default function FeesPage() {
               </p>
               <p>
                 CommunityPool charges a protocol fee when a CommunityPool is
-                funded. The fee at launch is <strong className="text-white">1%</strong> of
-                the amount being contributed.
+                funded. The launch protocol fee is{" "}
+                <strong className="text-white">1%</strong> of the amount being
+                contributed. The rate lives on-chain and may be changed, so the
+                current rate is always shown before you confirm a funding
+                transaction — and it can never exceed the immutable{" "}
+                <strong className="text-white">3%</strong> maximum.
               </p>
               <p>
                 The fee is taken <strong className="text-white">out of</strong> the
@@ -81,10 +85,10 @@ export default function FeesPage() {
               <p>
                 The fee lives in a contract on Ethereum, not in this website.
                 The protocol administrator can change it, and any change is an
-                on-chain transaction that takes effect for later contributions —
-                but the contract enforces a hard maximum of{" "}
-                <strong className="text-white">3%</strong> that no administrator
-                can exceed.
+                on-chain transaction that takes effect for later contributions.
+                The 3% ceiling is written into the contract itself, so no
+                administrator can exceed it and no change to this page can
+                alter it.
               </p>
               <p>
                 Being protocol administrator confers no power over your pool.
@@ -124,13 +128,15 @@ export default function FeesPage() {
                 <li className="flex items-start gap-3">
                   <CheckIcon />
                   <span className="text-sm">
-                    1% protocol fee on funding, deducted from the contribution
+                    Launch protocol fee 1% on funding, deducted from the
+                    contribution
                   </span>
                 </li>
                 <li className="flex items-start gap-3">
                   <CheckIcon />
                   <span className="text-sm">
-                    Hard-capped at 3% in the contract; shown before you confirm
+                    Current rate shown before you confirm; hard-capped at 3% in
+                    the contract
                   </span>
                 </li>
               </ul>

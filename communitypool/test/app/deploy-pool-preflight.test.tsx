@@ -23,7 +23,9 @@ function tomorrowYmd(): string {
   return `${y}-${m}-${dd}`;
 }
 
-const { deployCommunityPoolMock, fundPoolEthMock } = vi.hoisted(() => ({
+const { deployCommunityPoolMock, fundPoolEthMock , readChainProtocolFeeBpsMock, weiForUsdMock} = vi.hoisted(() => ({
+  readChainProtocolFeeBpsMock: vi.fn(async () => BigInt(100)),
+  weiForUsdMock: vi.fn(async () => BigInt("1000000000000000000")),
   deployCommunityPoolMock: vi.fn(),
   fundPoolEthMock: vi.fn(),
 }));
@@ -71,6 +73,25 @@ vi.mock("@/components/wallet-provider", () => ({
   }),
 }));
 
+/**
+ * The deploy flow refuses to start while the live protocol fee is unknown (it funds the pool
+ * immediately after creating it). These suites test preflight and failure recovery, not fee
+ * economics, so the reads are stubbed to a healthy 1%.
+ */
+vi.mock("@/lib/onchain/protocol-fee", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/onchain/protocol-fee")>(
+    "@/lib/onchain/protocol-fee",
+  );
+  return { ...actual, readChainProtocolFeeBps: readChainProtocolFeeBpsMock };
+});
+
+vi.mock("@/lib/onchain/price-math", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/onchain/price-math")>(
+    "@/lib/onchain/price-math",
+  );
+  return { ...actual, weiForUsdContribution: weiForUsdMock };
+});
+
 import DeployPoolModal from "@/app/(app)/pools/deploy-pool-modal";
 
 const originalFetch = global.fetch;
@@ -89,6 +110,13 @@ function advanceToReview() {
   fireEvent.click(screen.getByRole("button", { name: /Review/i }));
 }
 
+/** Step 4 resolves the initial contribution's fee split before Deploy becomes available. */
+async function waitForDeployReady() {
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: /^deploy/i })).toBeEnabled(),
+  );
+}
+
 function expectNoSubscriptionUi() {
   expect(screen.queryByText(/upgrade/i)).not.toBeInTheDocument();
   expect(screen.queryByText(/free plan/i)).not.toBeInTheDocument();
@@ -102,6 +130,11 @@ function expectNoSubscriptionUi() {
 
 describe("DeployPoolModal preflight (no plan gate)", () => {
   beforeEach(() => {
+    // The deploy flow now refuses to start unless the chain has a ProtocolConfig and its fee can
+    // be read; these tests exercise Sepolia, so give it one.
+    process.env.NEXT_PUBLIC_SEPOLIA_PROTOCOL_CONFIG = "0x00000000000000000000000000000000000000E5";
+    readChainProtocolFeeBpsMock.mockResolvedValue(BigInt(100));
+    weiForUsdMock.mockResolvedValue(BigInt("1000000000000000000"));
     deployCommunityPoolMock.mockReset();
     fundPoolEthMock.mockReset();
   });
@@ -126,6 +159,7 @@ describe("DeployPoolModal preflight (no plan gate)", () => {
 
     render(<DeployPoolModal open onClose={vi.fn()} />);
     advanceToReview();
+    await waitForDeployReady();
     fireEvent.click(screen.getByRole("button", { name: /Deploy/i }));
 
     await waitFor(() => {
@@ -163,6 +197,7 @@ describe("DeployPoolModal preflight (no plan gate)", () => {
 
       render(<DeployPoolModal open onClose={vi.fn()} />);
       advanceToReview();
+      await waitForDeployReady();
       fireEvent.click(screen.getByRole("button", { name: /Deploy/i }));
 
       await waitFor(() => {
@@ -179,6 +214,7 @@ describe("DeployPoolModal preflight (no plan gate)", () => {
 
     render(<DeployPoolModal open onClose={vi.fn()} />);
     advanceToReview();
+    await waitForDeployReady();
     fireEvent.click(screen.getByRole("button", { name: /Deploy/i }));
 
     await waitFor(() => {

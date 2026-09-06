@@ -7,7 +7,28 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 const shared = vi.hoisted(() => ({
   deployCommunityPool: vi.fn(),
   fundPoolEth: vi.fn(),
+  readChainProtocolFeeBps: vi.fn(async () => BigInt(100)),
+  weiForUsdContribution: vi.fn(async () => BigInt("1000000000000000000")),
 }));
+
+/**
+ * The deploy flow refuses to start while the live protocol fee is unknown (it funds the pool
+ * immediately after creating it). This suite tests failure recovery, not fee economics, so the
+ * reads are stubbed to a healthy 1%.
+ */
+vi.mock("@/lib/onchain/protocol-fee", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/onchain/protocol-fee")>(
+    "@/lib/onchain/protocol-fee",
+  );
+  return { ...actual, readChainProtocolFeeBps: shared.readChainProtocolFeeBps };
+});
+
+vi.mock("@/lib/onchain/price-math", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/onchain/price-math")>(
+    "@/lib/onchain/price-math",
+  );
+  return { ...actual, weiForUsdContribution: shared.weiForUsdContribution };
+});
 
 vi.mock("@/components/wallet-provider", () => ({
   useWallet: () => ({
@@ -88,6 +109,8 @@ describe("DeployPoolModal partial failure recovery", () => {
     const date = document.querySelector<HTMLInputElement>('input[type="date"]')!;
     fireEvent.change(date, { target: { value: tomorrowYmd() } });
     fireEvent.click(screen.getByRole("button", { name: /Review/i }));
+    // Step 4 resolves the initial contribution's fee split before Deploy becomes available.
+    await waitFor(() => expect(screen.getByRole("button", { name: /Deploy/i })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: /Deploy/i }));
 
     await waitFor(() =>

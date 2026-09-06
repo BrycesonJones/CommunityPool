@@ -18,7 +18,14 @@
  * matters because a failed read must never be rendered as "no fee".
  */
 
-import { Contract, id, type BrowserProvider, type JsonRpcProvider, type JsonRpcSigner } from "ethers";
+import {
+  Contract,
+  formatUnits,
+  id,
+  type BrowserProvider,
+  type JsonRpcProvider,
+  type JsonRpcSigner,
+} from "ethers";
 import {
   PROTOCOL_BPS_DENOMINATOR,
   PROTOCOL_MAX_FEE_BPS,
@@ -126,6 +133,21 @@ export type FundingSplit = {
 export function previewFundingSplit(grossAmount: bigint, feeBps: bigint): FundingSplit {
   const { feeAmount, netAmount } = protocolFeeFor(grossAmount, feeBps);
   return { grossAmount, feeAmount, netAmount, feeBps };
+}
+
+/**
+ * Token-native display for a preview row. Trims trailing zeros but always keeps at least the
+ * first significant digit, so a small fee is shown as a real number rather than rounded to 0.
+ */
+export function formatTokenAmount(raw: bigint, decimals: number): string {
+  const full = formatUnits(raw, decimals);
+  if (!full.includes(".")) return full;
+  const [whole, frac] = full.split(".");
+  const trimmed = frac.replace(/0+$/, "");
+  if (trimmed === "") return whole;
+  const firstSig = trimmed.search(/[1-9]/);
+  const keep = Math.max(4, firstSig + 1);
+  return `${whole}.${trimmed.slice(0, keep)}`;
 }
 
 /** "1%", "0.75%", "0%" — trailing zeros trimmed, for UI labels. */

@@ -85,6 +85,25 @@ being classified as V1.
 Fund and withdraw helpers are unchanged and drive both generations: V2 keeps every V1 function with
 identical selectors, so the frozen V1 ABI still works for them.
 
+### Funding fails closed on unresolved economics
+
+No wallet prompt opens while the fee for a contribution is unknown. The Fund button stays disabled
+while the preview is loading and while a read has failed; a failed read shows the reason plus a
+Retry action rather than letting the transaction proceed under a generic "never more than 3%"
+warning. A confirmed V1 pool needs no fee resolution and funds normally.
+
+Immediately before signing, a V2 contribution re-reads the live rate. If it moved since the
+preview, the transaction is not submitted: the preview refreshes to the new economics and the user
+must press Fund again to confirm what they can now see. The rate can still change between that
+re-read and mining — V2 has no `maxFeeBps` transaction parameter — so the UI says so, and bounds it
+with the contract's immutable 3% ceiling.
+
+The deploy flow carries the same standard because it funds the pool immediately after creating it,
+with no second review in between: the step-4 review shows the initial contribution's gross, fee and
+net in token-native units, and deployment is blocked (with Retry) while the live ProtocolConfig fee
+cannot be read, rather than deploying and then prompting for a funding signature with unknown
+economics.
+
 ### Fee presentation
 
 The fee is deducted **from** the gross contribution, never added on top. The preview uses the same
