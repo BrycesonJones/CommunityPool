@@ -129,3 +129,32 @@ so and shows no numbers; it never falls back to a default rate.
 
 No contract was deployed, no ProtocolConfig was modified, no mainnet or testnet transaction was
 sent by the tooling. Gas optimization remains deferred.
+
+## Hotfix: initial-contribution preview failed closed incorrectly (2026-09-06)
+
+The first production smoke test never reached a deployment. The step-4 review reported
+"Could not read the current protocol fee", and Retry repeated it, even though the fee was
+readable: `cast call protocolFeeBps()` returned 100, and the same call from the production
+browser through `window.ethereum` returned 100 as well.
+
+**Root cause.** Two defects compounded:
+
+1. `weiForUsdContribution` (and the ERC-20 equivalent) built the Chainlink contract with the
+   **signer** as its runner. ethers then populates the call before sending it, so the wallet
+   receives `eth_call {from, to, data}` for a plain view. The console checks that proved the chain
+   healthy used `eth_call {to, data}` — a different shape, and the one that works. Protocol-fee
+   reads already used the provider, which is why the fee read succeeded while the price read did
+   not. A view has no caller; requiring signing context for one is wrong regardless of wallet.
+2. `loadInitialFundSplit` wrapped the fee read, the price read and the split arithmetic in one
+   `try`/`catch` whose only outcome was `setInitialFundSplit(null)`, which the UI rendered as
+   "could not read the current protocol fee". So a price-feed failure was reported as a
+   ProtocolConfig failure, sending diagnosis to the wrong contract.
+
+**Fix.** `readerFor()` resolves a signer to its provider, and every read-only call — Chainlink
+feeds, `protocolFeeBps()`, `getProtocolFeeConfig()` — now goes through the provider, sending
+`eth_call {to, data}` with no `from`. The preview runs in three stages, each classified: fee,
+price (naming the asset's feed, e.g. "ETH/USD" or "PAXG/USD"), and calculation. Every state still
+fails closed with Retry and Deploy disabled; no rate is ever assumed. `test/onchain/read-only-runner.test.ts`
+pins the call shape against a wallet that rejects `from`-bearing `eth_call`, reproducing the exact
+production failure.
+
