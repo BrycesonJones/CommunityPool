@@ -4,6 +4,7 @@ pragma solidity ^0.8.18;
 import {Test} from "forge-std/Test.sol";
 import {CommunityPool} from "../src/CommunityPool.sol";
 import {DeployCommunityPool} from "../script/DeployCommunityPool.s.sol";
+import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 
 /// @notice Runs the real DeployCommunityPool script against a mainnet fork and asserts the
 /// resulting pool's whitelist matches the intended mainnet asset set (WBTC + PAXG + XAU₮).
@@ -27,6 +28,10 @@ contract ForkDeployScriptTest is Test {
         // The script reads optional env vars — ensure defaults are sane.
         vm.setEnv("POOL_NAME", "ForkDeployTest");
         vm.setEnv("POOL_DESCRIPTION", "fork");
+        // The script refuses to deploy on chain 1 without an explicit ProtocolConfig address;
+        // supply a fixture deployed on the fork (test-only admin/treasury addresses).
+        ProtocolConfig fixtureConfig = new ProtocolConfig(makeAddr("protocolAdmin"), makeAddr("treasury"), 100);
+        vm.setEnv("PROTOCOL_CONFIG_ADDRESS", vm.toString(address(fixtureConfig)));
         // 1e16 minimum (~$0.01 / hour, well under any sane fund) so we don't trip on price.
         CommunityPool pool = script.run();
 

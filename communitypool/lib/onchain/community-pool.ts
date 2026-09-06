@@ -11,7 +11,10 @@ import {
   getAddress,
   isAddress,
 } from "ethers";
-import artifact from "./community-pool-artifact.json";
+// FROZEN V1 PRODUCTION ARTIFACT. Every production pool deploys from this file. Do not point
+// this import at the V2 candidate artifact; activation of V2 is an explicit, reviewed phase
+// (see docs/contracts-build.md) and test/security/contract-artifact-boundary.test.ts guards it.
+import artifact from "./community-pool-v1-artifact.json";
 import { getDefaultErc20TokenConfigs, getPoolChainConfig } from "./pool-chain-config";
 import { weiForUsdContribution } from "./price-math";
 import { getExpectedChainId, networkLabelForChainId } from "@/lib/wallet/expected-chain";

@@ -2,10 +2,8 @@
 pragma solidity ^0.8.18;
 
 import {Test} from "forge-std/Test.sol";
-import {
-    CommunityPool,
-    CommunityPool__TokenNotWhitelisted
-} from "../src/CommunityPool.sol";
+import {CommunityPool, CommunityPool__TokenNotWhitelisted} from "../src/CommunityPool.sol";
+import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {MockV3Aggregator} from "./pricefeeds/V3Aggregator.sol";
 import {MockMintableERC20} from "./MockMintableERC20.sol";
 import {MockFeeOnTransferERC20} from "./MockFeeOnTransferERC20.sol";
@@ -30,6 +28,7 @@ contract TokenAllowlistTest is Test {
     MockFeeOnTransferERC20 internal feeToken;
 
     CommunityPool internal pool;
+    ProtocolConfig internal protocolConfig;
 
     function setUp() public {
         ethFeed = new MockV3Aggregator(8, int256(2000e8));
@@ -52,7 +51,10 @@ contract TokenAllowlistTest is Test {
 
         address[] memory cos = new address[](0);
         // 5 USD minimum so 1 oz of PAXG ($2,000) and 1 oz of XAU₮ ($2,000) both clearly exceed it.
-        pool = new CommunityPool("Allowlist", "test", 5e18, cos, expiresAt, address(ethFeed), tks);
+        protocolConfig = new ProtocolConfig(makeAddr("protocolAdmin"), makeAddr("treasury"), 100);
+        pool = new CommunityPool(
+            "Allowlist", "test", 5e18, cos, expiresAt, address(ethFeed), tks, address(protocolConfig)
+        );
 
         paxg18.mint(USER, 100e18);
         xaut6.mint(USER, 100e6);

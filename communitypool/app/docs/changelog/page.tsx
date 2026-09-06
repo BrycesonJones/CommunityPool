@@ -25,7 +25,7 @@ const ENTRIES: Entry[] = [
     date: "2026-04-21",
     area: "Contract",
     title: "Partial withdraws added",
-    body: "CommunityPool.sol gained withdraw(amount) and withdrawTokenAmount(token, amount). Pools deployed before this date expose only the full-balance variants. The dashboard auto-detects this via poolSupportsPartialWithdraw against the deployed bytecode; the canonical ABI is in lib/onchain/community-pool-artifact.json (verified byte-for-byte against forge-out in CI).",
+    body: "CommunityPool.sol gained withdraw(amount) and withdrawTokenAmount(token, amount). Pools deployed before this date expose only the full-balance variants. The dashboard auto-detects this via poolSupportsPartialWithdraw against the deployed bytecode; the production ABI is the frozen V1 artifact lib/onchain/community-pool-v1-artifact.json (its creation-bytecode hash is guarded in CI).",
   },
 ];
 

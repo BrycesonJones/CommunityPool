@@ -3,7 +3,7 @@ import { Contract, getAddress, isAddress } from "ethers";
 import { createClient as createServerSupabaseClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getServerReadOnlyProviderForChain } from "@/lib/onchain/server-providers";
-import communityPoolArtifact from "@/lib/onchain/community-pool-artifact.json";
+import communityPoolArtifact from "@/lib/onchain/community-pool-v1-artifact.json";
 import type { TablesInsert } from "@/lib/supabase/database.types";
 import { enforceRateLimits } from "@/lib/security/rate-limit";
 import { apiErrorResponse, publicErrorResponse } from "@/lib/security/public-error";

@@ -2,12 +2,9 @@
 pragma solidity ^0.8.18;
 
 import {Test} from "forge-std/Test.sol";
-import {
-    CommunityPool,
-    CommunityPool__DuplicateOwner,
-    CommunityPool__NotOwner
-} from "../src/CommunityPool.sol";
+import {CommunityPool, CommunityPool__DuplicateOwner, CommunityPool__NotOwner} from "../src/CommunityPool.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {MockV3Aggregator} from "./pricefeeds/V3Aggregator.sol";
 import {MockMintableERC20} from "./MockMintableERC20.sol";
 
@@ -19,6 +16,7 @@ contract CommunityPoolSecurityTest is Test {
     receive() external payable {}
 
     CommunityPool internal pool;
+    ProtocolConfig internal protocolConfig;
     MockV3Aggregator internal ethFeed;
     MockV3Aggregator internal wbtcFeed;
     MockMintableERC20 internal wbtc;
@@ -41,7 +39,8 @@ contract CommunityPoolSecurityTest is Test {
         address[] memory cos = new address[](1);
         cos[0] = CO_OWNER;
 
-        pool = new CommunityPool("Sec", "desc", 5e18, cos, expiresAt, address(ethFeed), tks);
+        protocolConfig = new ProtocolConfig(makeAddr("protocolAdmin"), makeAddr("treasury"), 100);
+        pool = new CommunityPool("Sec", "desc", 5e18, cos, expiresAt, address(ethFeed), tks, address(protocolConfig));
 
         vm.deal(USER, 10 ether);
         wbtc.mint(USER, 1e12);
@@ -109,7 +108,7 @@ contract CommunityPoolSecurityTest is Test {
         cos[1] = CO_OWNER;
         CommunityPool.TokenConfig[] memory tks = new CommunityPool.TokenConfig[](0);
         vm.expectRevert(CommunityPool__DuplicateOwner.selector);
-        new CommunityPool("Dup", "d", 5e18, cos, expiresAt, address(ethFeed), tks);
+        new CommunityPool("Dup", "d", 5e18, cos, expiresAt, address(ethFeed), tks, address(protocolConfig));
     }
 
     function testConstructorRejectsDeployerAsCoOwner() public {
@@ -117,7 +116,7 @@ contract CommunityPoolSecurityTest is Test {
         cos[0] = address(this); // deployer listed again
         CommunityPool.TokenConfig[] memory tks = new CommunityPool.TokenConfig[](0);
         vm.expectRevert(CommunityPool__DuplicateOwner.selector);
-        new CommunityPool("Dup", "d", 5e18, cos, expiresAt, address(ethFeed), tks);
+        new CommunityPool("Dup", "d", 5e18, cos, expiresAt, address(ethFeed), tks, address(protocolConfig));
     }
 
     function testNoAddOwnerExistsPostDeploy() public {

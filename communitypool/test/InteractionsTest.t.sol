@@ -3,6 +3,7 @@ pragma solidity ^0.8.18;
 
 import {Test} from "forge-std/Test.sol";
 import {CommunityPool} from "../src/CommunityPool.sol";
+import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {MockV3Aggregator} from "./pricefeeds/V3Aggregator.sol";
 import {FundCommunityPool} from "../script/Interactions.s.sol";
 
@@ -12,11 +13,12 @@ contract InteractionsTest is Test {
 
     function setUp() public {
         MockV3Aggregator feed = new MockV3Aggregator(8, int256(2000e8));
+        ProtocolConfig protocolConfig = new ProtocolConfig(makeAddr("protocolAdmin"), makeAddr("treasury"), 100);
         address[] memory cos;
         CommunityPool.TokenConfig[] memory tks;
         vm.startPrank(owner);
         pool = new CommunityPool(
-            "T", "", 5e18, cos, uint64(block.timestamp + 365 days), address(feed), tks
+            "T", "", 5e18, cos, uint64(block.timestamp + 365 days), address(feed), tks, address(protocolConfig)
         );
         vm.stopPrank();
     }

@@ -77,7 +77,7 @@ export default function PoolLifecyclePage() {
           automatically via <code>poolSupportsPartialWithdraw</code>, which
           probes the deployed bytecode for the partial-withdraw selectors
           at runtime. If you are calling a pool directly, the canonical
-          ABI lives in <code>lib/onchain/community-pool-artifact.json</code>
+          ABI lives in <code>lib/onchain/community-pool-v1-artifact.json</code>
           (the <code>abi</code> field) and CI verifies it against{" "}
           <code>forge-out/</code> on every push.
         </p>

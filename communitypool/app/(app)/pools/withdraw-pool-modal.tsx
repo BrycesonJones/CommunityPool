@@ -11,7 +11,7 @@ import {
   withdrawPoolToken,
   withdrawPoolTokenAmount,
 } from "@/lib/onchain/community-pool";
-import communityPoolArtifact from "@/lib/onchain/community-pool-artifact.json";
+import communityPoolArtifact from "@/lib/onchain/community-pool-v1-artifact.json";
 import { weiForUsdContribution } from "@/lib/onchain/price-math";
 import {
   getErc20PresetsForPoolChain,

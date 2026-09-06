@@ -12,7 +12,7 @@ import {
 } from "ethers";
 import { CHAINLINK_AGGREGATOR_V3_ABI, weiForUsdContribution } from "./price-math";
 import type { Erc20Preset } from "./pool-chain-config";
-import artifact from "./community-pool-artifact.json";
+import artifact from "./community-pool-v1-artifact.json";
 
 export const TECHNICAL_MIN_POOL_USD_HUMAN = "0.01";
 export const TECHNICAL_MIN_FUND_ETH_USD_HUMAN = "0.01";

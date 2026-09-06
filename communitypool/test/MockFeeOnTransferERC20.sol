@@ -9,9 +9,7 @@ contract MockFeeOnTransferERC20 is ERC20 {
     uint8 private immutable _decimals;
     uint16 public feeBps;
 
-    constructor(string memory name_, string memory symbol_, uint8 decimals_, uint16 feeBps_)
-        ERC20(name_, symbol_)
-    {
+    constructor(string memory name_, string memory symbol_, uint8 decimals_, uint16 feeBps_) ERC20(name_, symbol_) {
         _decimals = decimals_;
         feeBps = feeBps_;
     }
