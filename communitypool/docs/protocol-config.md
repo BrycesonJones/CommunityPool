@@ -76,10 +76,16 @@ model is transitioning. Fee collection exists only in the V2 candidate
   V2 supports ERC-20 assets with exact transfer accounting. Fee-on-transfer /
   rebasing behavior is unsupported unless explicitly added in a future reviewed
   contract version.**
-- **Reentrancy.** `fund` and `fundERC20` are `nonReentrant` (OpenZeppelin
-  `ReentrancyGuard`). Withdrawals are not guarded: they carry no per-funder
-  state, their only external call is the payout itself, and a recipient that
-  re-enters can only reach `onlyOwner` paths it was already entitled to.
+- **Reentrancy.** Every state-changing function (`fund`, `fundERC20`,
+  `withdraw`, `cheaperWithdraw`, `withdrawToken`, `withdrawTokenAmount`,
+  `releaseExpiredFundsToDeployer`) shares one OpenZeppelin `ReentrancyGuard`.
+  Phase 2.5 showed that guarding only the funding paths let a fee recipient
+  that is *also* an explicitly authorized owner withdraw from inside the ETH fee
+  callback, emitting `Withdrawn` before the contribution's `Funded` event and,
+  for a callback-capable ERC-20, tripping the exact-transfer check. No
+  authority was gained, but settlement ordering was incoherent. With the shared
+  guard, nothing else can execute while a contribution settles; owner rights are
+  unchanged outside the callback.
 - **Events.** `Funded(funder, feeRecipient, gross, fee, net)` and
   `FundedERC20(token, funder, feeRecipient, gross, fee, net)` are emitted only
   after all transfers succeed; `feeRecipient` is zero when the fee is zero.

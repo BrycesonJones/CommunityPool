@@ -32,6 +32,31 @@ remappings = [
     "foundry-devops/=lib/foundry-devops/",
 ]
 
+# Default (CI) fuzz/invariant strength: meaningful but bounded so every PR
+# runs the full security suites. The dedicated heavy campaign is
+# `FOUNDRY_PROFILE=security forge test --match-path 'test/fee-security/*'`
+# (npm run contracts:security); see docs/security/protocol-fee-threat-model.md.
+[fuzz]
+runs = 512
+max_test_rejects = 131072
+
+[invariant]
+runs = 128
+depth = 64
+fail_on_revert = false
+
+[profile.security]
+# Inherits every build setting from profile.default (solc, evm, optimizer,
+# remappings) so bytecode/metadata are identical; only test strength differs.
+[profile.security.fuzz]
+runs = 5000
+max_test_rejects = 1048576
+
+[profile.security.invariant]
+runs = 500
+depth = 100
+fail_on_revert = false
+
 # See https://book.getfoundry.sh/reference/config#rpc_endpoints
 [rpc_endpoints]
 sepolia = "${SEPOLIA_RPC_URL}"

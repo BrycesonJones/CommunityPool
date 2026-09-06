@@ -61,6 +61,11 @@ error CommunityPool__UnsupportedTokenBehavior();
 ///   (`CommunityPool__UnsupportedTokenBehavior`). Fee-on-transfer, rebasing, and similar
 ///   tokens are unsupported in this contract version.
 /// - `fund`, `receive` and `fallback` are economically identical; ETH cannot bypass the fee.
+/// - Every state-changing function shares one reentrancy guard (funding, owner withdrawals and
+///   expiry release). While a contribution is settling, no other pool action can execute, even
+///   from a fee recipient that is also an authorized owner. Owner rights are unchanged; they
+///   simply cannot be exercised from inside a fee callback, so settlement, balances and event
+///   ordering stay coherent (Phase 2.5 finding).
 ///
 /// The ProtocolConfig admin has no authority here: it is not an owner, cannot withdraw, and
 /// cannot change expiry, minimums, owners, or the token allowlist. Fees go exclusively to the
@@ -299,20 +304,25 @@ contract CommunityPool is ReentrancyGuard {
     }
 
     /// @notice Partial ETH owner withdraw before expiry.
-    function withdraw(uint256 amount) external onlyOwner onlyBeforeExpiryOwnerWithdraw {
+    function withdraw(uint256 amount) external nonReentrant onlyOwner onlyBeforeExpiryOwnerWithdraw {
         _withdrawEthAmount(msg.sender, amount);
     }
 
     /// @notice Full ETH owner withdraw before expiry. After expiresAt, use
     /// releaseExpiredFundsToDeployer instead.
-    function cheaperWithdraw() external onlyOwner onlyBeforeExpiryOwnerWithdraw {
+    function cheaperWithdraw() external nonReentrant onlyOwner onlyBeforeExpiryOwnerWithdraw {
         uint256 bal = address(this).balance;
         if (bal == 0) return;
         _withdrawEthAmount(msg.sender, bal);
     }
 
     /// @notice Partial ERC20 owner withdraw before expiry.
-    function withdrawTokenAmount(IERC20 token, uint256 amount) external onlyOwner onlyBeforeExpiryOwnerWithdraw {
+    function withdrawTokenAmount(IERC20 token, uint256 amount)
+        external
+        nonReentrant
+        onlyOwner
+        onlyBeforeExpiryOwnerWithdraw
+    {
         if (address(s_tokenInfo[address(token)].feed) == address(0)) {
             revert CommunityPool__TokenNotWhitelisted();
         }
@@ -326,7 +336,7 @@ contract CommunityPool is ReentrancyGuard {
 
     /// @notice Full ERC20 owner withdraw before expiry. After expiresAt, use
     /// releaseExpiredFundsToDeployer instead.
-    function withdrawToken(IERC20 token) external onlyOwner onlyBeforeExpiryOwnerWithdraw {
+    function withdrawToken(IERC20 token) external nonReentrant onlyOwner onlyBeforeExpiryOwnerWithdraw {
         if (address(s_tokenInfo[address(token)].feed) == address(0)) {
             revert CommunityPool__TokenNotWhitelisted();
         }
@@ -340,7 +350,7 @@ contract CommunityPool is ReentrancyGuard {
 
     /// @notice Callable by anyone after expiresAt. Sends all ETH and all whitelisted ERC20
     /// balances to deployer.
-    function releaseExpiredFundsToDeployer() external {
+    function releaseExpiredFundsToDeployer() external nonReentrant {
         if (block.timestamp <= expiresAt) revert CommunityPool__NotYetExpiredForRelease();
 
         uint256 ethBal = address(this).balance;
