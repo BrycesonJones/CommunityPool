@@ -32,6 +32,8 @@ contract CommunityPoolTest is Test {
     receive() external payable {}
 
     CommunityPool internal pool;
+    /// @dev Oracle max age for fixtures: generous so time-travel tests exercise expiry, not staleness.
+    uint32 internal constant ORACLE_MAX_AGE = 365 days;
     ProtocolConfig internal protocolConfig;
     MockV3Aggregator internal ethFeed;
     MockV3Aggregator internal tokenFeed;
@@ -50,7 +52,9 @@ contract CommunityPoolTest is Test {
         expiresAt = uint64(block.timestamp + 30 days);
 
         CommunityPool.TokenConfig[] memory tks = new CommunityPool.TokenConfig[](1);
-        tks[0] = CommunityPool.TokenConfig({token: address(token), usdFeed: address(tokenFeed), decimals: 8});
+        tks[0] = CommunityPool.TokenConfig({
+            token: address(token), usdFeed: address(tokenFeed), decimals: 8, maxPriceAge: ORACLE_MAX_AGE
+        });
 
         address[] memory cos = new address[](1);
         cos[0] = address(0xCAFE);
@@ -58,7 +62,9 @@ contract CommunityPoolTest is Test {
         // 0 bps: these suites pin V1-equivalent economics (100% retained). Fee-bearing paths are
         // covered in ProtocolFeeFunding.t.sol and ProtocolConfigIntegration.t.sol.
         protocolConfig = new ProtocolConfig(makeAddr("protocolAdmin"), makeAddr("treasury"), 0);
-        pool = new CommunityPool("Alpha", "desc", 5e18, cos, expiresAt, address(ethFeed), tks, address(protocolConfig));
+        pool = new CommunityPool(
+            "Alpha", "desc", 5e18, cos, expiresAt, address(ethFeed), ORACLE_MAX_AGE, tks, address(protocolConfig)
+        );
 
         vm.deal(USER, STARTING_BALANCE);
         token.mint(USER, 1e12);

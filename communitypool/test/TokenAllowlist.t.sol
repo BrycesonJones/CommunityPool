@@ -32,6 +32,8 @@ contract TokenAllowlistTest is Test {
     MockFeeOnTransferERC20 internal feeToken;
 
     CommunityPool internal pool;
+    /// @dev Oracle max age for fixtures: generous so time-travel tests exercise expiry, not staleness.
+    uint32 internal constant ORACLE_MAX_AGE = 365 days;
     ProtocolConfig internal protocolConfig;
 
     function setUp() public {
@@ -49,9 +51,15 @@ contract TokenAllowlistTest is Test {
 
         // Whitelist PAXG (18-dec), XAU₮ (6-dec), and a fee-mechanism stand-in. Random ERC20 stays out.
         CommunityPool.TokenConfig[] memory tks = new CommunityPool.TokenConfig[](3);
-        tks[0] = CommunityPool.TokenConfig({token: address(paxg18), usdFeed: address(paxgFeed), decimals: 18});
-        tks[1] = CommunityPool.TokenConfig({token: address(xaut6), usdFeed: address(xautFeed), decimals: 6});
-        tks[2] = CommunityPool.TokenConfig({token: address(feeToken), usdFeed: address(paxgFeed), decimals: 18});
+        tks[0] = CommunityPool.TokenConfig({
+            token: address(paxg18), usdFeed: address(paxgFeed), decimals: 18, maxPriceAge: ORACLE_MAX_AGE
+        });
+        tks[1] = CommunityPool.TokenConfig({
+            token: address(xaut6), usdFeed: address(xautFeed), decimals: 6, maxPriceAge: ORACLE_MAX_AGE
+        });
+        tks[2] = CommunityPool.TokenConfig({
+            token: address(feeToken), usdFeed: address(paxgFeed), decimals: 18, maxPriceAge: ORACLE_MAX_AGE
+        });
 
         address[] memory cos = new address[](0);
         // 5 USD minimum so 1 oz of PAXG ($2,000) and 1 oz of XAU₮ ($2,000) both clearly exceed it.
@@ -59,7 +67,7 @@ contract TokenAllowlistTest is Test {
         // covered in ProtocolFeeFunding.t.sol and ProtocolConfigIntegration.t.sol.
         protocolConfig = new ProtocolConfig(makeAddr("protocolAdmin"), makeAddr("treasury"), 0);
         pool = new CommunityPool(
-            "Allowlist", "test", 5e18, cos, expiresAt, address(ethFeed), tks, address(protocolConfig)
+            "Allowlist", "test", 5e18, cos, expiresAt, address(ethFeed), ORACLE_MAX_AGE, tks, address(protocolConfig)
         );
 
         paxg18.mint(USER, 100e18);

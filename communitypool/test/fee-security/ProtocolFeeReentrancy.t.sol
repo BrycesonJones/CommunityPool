@@ -169,12 +169,18 @@ contract ProtocolFeeReentrancyTest is FeeSecurityBase {
         vm.deal(address(tok), 10 ether);
         if (tokenIsOwner) {
             CommunityPool.TokenConfig[] memory tks = new CommunityPool.TokenConfig[](2);
-            tks[0] = CommunityPool.TokenConfig({token: address(wbtc), usdFeed: address(wbtcFeed), decimals: 8});
-            tks[1] = CommunityPool.TokenConfig({token: address(tok), usdFeed: address(paxgFeed), decimals: 18});
+            tks[0] = CommunityPool.TokenConfig({
+                token: address(wbtc), usdFeed: address(wbtcFeed), decimals: 8, maxPriceAge: ORACLE_MAX_AGE
+            });
+            tks[1] = CommunityPool.TokenConfig({
+                token: address(tok), usdFeed: address(paxgFeed), decimals: 18, maxPriceAge: ORACLE_MAX_AGE
+            });
             address[] memory cos = new address[](1);
             cos[0] = address(tok);
             vm.prank(owner);
-            p = new CommunityPool("CB", "d", MIN_USD, cos, expiresAt, address(ethFeed), tks, address(config));
+            p = new CommunityPool(
+                "CB", "d", MIN_USD, cos, expiresAt, address(ethFeed), ORACLE_MAX_AGE, tks, address(config)
+            );
         } else {
             p = _newPoolWithExtraToken(owner, address(config), address(tok), address(paxgFeed), 18);
         }

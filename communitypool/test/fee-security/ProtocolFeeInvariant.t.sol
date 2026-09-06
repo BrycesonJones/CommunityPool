@@ -279,6 +279,8 @@ contract ProtocolFeeInvariantTest is StdInvariant, Test {
     FeeHandler internal h;
     CommunityPool internal pool;
     ProtocolConfig internal config;
+    /// @dev Oracle max age for fixtures: generous so time-travel tests exercise expiry, not staleness.
+    uint32 internal constant ORACLE_MAX_AGE = 365 days;
     MockMintableERC20 internal token;
 
     function setUp() public {
@@ -292,11 +294,14 @@ contract ProtocolFeeInvariantTest is StdInvariant, Test {
         token = new MockMintableERC20("Wrapped BTC", "WBTC", 8);
         uint64 expiresAt = uint64(block.timestamp + 20 days);
         CommunityPool.TokenConfig[] memory tks = new CommunityPool.TokenConfig[](1);
-        tks[0] = CommunityPool.TokenConfig({token: address(token), usdFeed: address(tokFeed), decimals: 8});
+        tks[0] = CommunityPool.TokenConfig({
+            token: address(token), usdFeed: address(tokFeed), decimals: 8, maxPriceAge: ORACLE_MAX_AGE
+        });
         address[] memory cos = new address[](1);
         cos[0] = coOwner;
         vm.prank(owner);
-        pool = new CommunityPool("Inv", "i", 5e18, cos, expiresAt, address(ethFeed), tks, address(config));
+        pool =
+            new CommunityPool("Inv", "i", 5e18, cos, expiresAt, address(ethFeed), ORACLE_MAX_AGE, tks, address(config));
         h = new FeeHandler(pool, config, token, expiresAt, owner, coOwner);
         targetContract(address(h));
     }

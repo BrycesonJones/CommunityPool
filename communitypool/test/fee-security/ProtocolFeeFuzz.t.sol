@@ -24,8 +24,9 @@ contract ProtocolFeeFuzzTest is FeeSecurityBase {
         rawConfig = new MockMalformedProtocolConfig(100, treasuryA);
         address[] memory cos = new address[](0);
         vm.prank(owner);
-        harness =
-            new PoolHarness("H", "h", MIN_USD, cos, expiresAt, address(ethFeed), _tokenConfigs(), address(rawConfig));
+        harness = new PoolHarness(
+            "H", "h", MIN_USD, cos, expiresAt, address(ethFeed), ORACLE_MAX_AGE, _tokenConfigs(), address(rawConfig)
+        );
     }
 
     // ------------------------------------------------------------ pure math (no asset movement)
@@ -183,10 +184,13 @@ contract ProtocolFeeFuzzTest is FeeSecurityBase {
         MockV3Aggregator feed = new MockV3Aggregator(8, price);
         _setFee(bps);
         CommunityPool.TokenConfig[] memory tks = new CommunityPool.TokenConfig[](1);
-        tks[0] = CommunityPool.TokenConfig({token: address(tok), usdFeed: address(feed), decimals: dec});
+        tks[0] = CommunityPool.TokenConfig({
+            token: address(tok), usdFeed: address(feed), decimals: dec, maxPriceAge: ORACLE_MAX_AGE
+        });
         address[] memory cos = new address[](0);
         vm.prank(owner);
-        CommunityPool p = new CommunityPool("F", "f", minUsd, cos, expiresAt, address(ethFeed), tks, address(config));
+        CommunityPool p =
+            new CommunityPool("F", "f", minUsd, cos, expiresAt, address(ethFeed), ORACLE_MAX_AGE, tks, address(config));
         tok.mint(funder, gross);
         vm.prank(funder);
         tok.approve(address(p), gross); // exactly gross

@@ -16,6 +16,8 @@ contract CommunityPoolSecurityTest is Test {
     receive() external payable {}
 
     CommunityPool internal pool;
+    /// @dev Oracle max age for fixtures: generous so time-travel tests exercise expiry, not staleness.
+    uint32 internal constant ORACLE_MAX_AGE = 365 days;
     ProtocolConfig internal protocolConfig;
     MockV3Aggregator internal ethFeed;
     MockV3Aggregator internal wbtcFeed;
@@ -34,7 +36,9 @@ contract CommunityPoolSecurityTest is Test {
         expiresAt = uint64(block.timestamp + 30 days);
 
         CommunityPool.TokenConfig[] memory tks = new CommunityPool.TokenConfig[](1);
-        tks[0] = CommunityPool.TokenConfig({token: address(wbtc), usdFeed: address(wbtcFeed), decimals: 8});
+        tks[0] = CommunityPool.TokenConfig({
+            token: address(wbtc), usdFeed: address(wbtcFeed), decimals: 8, maxPriceAge: ORACLE_MAX_AGE
+        });
 
         address[] memory cos = new address[](1);
         cos[0] = CO_OWNER;
@@ -42,7 +46,9 @@ contract CommunityPoolSecurityTest is Test {
         // 0 bps: these suites pin V1-equivalent economics (100% retained). Fee-bearing paths are
         // covered in ProtocolFeeFunding.t.sol and ProtocolConfigIntegration.t.sol.
         protocolConfig = new ProtocolConfig(makeAddr("protocolAdmin"), makeAddr("treasury"), 0);
-        pool = new CommunityPool("Sec", "desc", 5e18, cos, expiresAt, address(ethFeed), tks, address(protocolConfig));
+        pool = new CommunityPool(
+            "Sec", "desc", 5e18, cos, expiresAt, address(ethFeed), ORACLE_MAX_AGE, tks, address(protocolConfig)
+        );
 
         vm.deal(USER, 10 ether);
         wbtc.mint(USER, 1e12);
@@ -110,7 +116,9 @@ contract CommunityPoolSecurityTest is Test {
         cos[1] = CO_OWNER;
         CommunityPool.TokenConfig[] memory tks = new CommunityPool.TokenConfig[](0);
         vm.expectRevert(CommunityPool__DuplicateOwner.selector);
-        new CommunityPool("Dup", "d", 5e18, cos, expiresAt, address(ethFeed), tks, address(protocolConfig));
+        new CommunityPool(
+            "Dup", "d", 5e18, cos, expiresAt, address(ethFeed), ORACLE_MAX_AGE, tks, address(protocolConfig)
+        );
     }
 
     function testConstructorRejectsDeployerAsCoOwner() public {
@@ -118,7 +126,9 @@ contract CommunityPoolSecurityTest is Test {
         cos[0] = address(this); // deployer listed again
         CommunityPool.TokenConfig[] memory tks = new CommunityPool.TokenConfig[](0);
         vm.expectRevert(CommunityPool__DuplicateOwner.selector);
-        new CommunityPool("Dup", "d", 5e18, cos, expiresAt, address(ethFeed), tks, address(protocolConfig));
+        new CommunityPool(
+            "Dup", "d", 5e18, cos, expiresAt, address(ethFeed), ORACLE_MAX_AGE, tks, address(protocolConfig)
+        );
     }
 
     function testNoAddOwnerExistsPostDeploy() public {

@@ -92,6 +92,29 @@ model is transitioning. Fee collection exists only in the V2 candidate
 - **Owners withdraw only what remains.** The paid fee is with the treasury;
   `cheaperWithdraw` and `releaseExpiredFundsToDeployer` release the net.
 
+## Oracle configuration (Phase 2.6)
+
+Price validation is the pool's concern, not ProtocolConfig's: the admin has no
+oracle authority and gained none in Phase 2.6. Each V2 pool fixes, at
+construction and forever:
+
+```text
+constructor(name, description, minimumUsd, coOwners, expiresAt,
+            ethUsdFeed, ethUsdMaxPriceAge,               // uint32 seconds, must be > 0
+            TokenConfig[] { token, usdFeed, decimals, maxPriceAge },
+            protocolConfig)
+```
+
+For every feed the pool reads `decimals()` once (rejecting > 18) and stores it
+with the feed and its `maxPriceAge`. Every later price read requires a positive
+answer, a completed round, a timestamp not in the future and an age no greater
+than `maxPriceAge` (inclusive), scaled to 18 decimals; otherwise the
+contribution reverts with a typed `PriceConverter__*` error before any asset
+moves. Views `getEthUsdFeed()` and `getTokenInfo(token)` expose the captured
+values. The full policy, the trust boundary and the test evidence are in
+`docs/security/protocol-fee-threat-model.md`; the verified mainnet thresholds
+are in `docs/deployment/phase-2-7-mainnet-canary.md`.
+
 ## Authority model
 
 | Actor | May | May not |
@@ -135,7 +158,10 @@ boundary test asserts that they are absent from production code.
 `script/DeployCommunityPool.s.sol` requires `PROTOCOL_CONFIG_ADDRESS` on
 mainnet and Sepolia (an address with code) and refuses to run without it. On a
 local chain it deploys a throwaway fixture config for the broadcaster if no
-address is supplied.
+address is supplied. Oracle max ages: on mainnet the script uses the verified
+constants (`MAINNET_*_MAX_AGE`); on Sepolia `SEPOLIA_ETH_USD_MAX_AGE` and
+`SEPOLIA_TOKEN_USD_MAX_AGE` must be supplied explicitly; on a local chain
+`POOL_ETH_USD_MAX_AGE` / `POOL_TOKEN_USD_MAX_AGE` default to one day.
 
 ## Why the constructor requires code at the config address
 

@@ -49,7 +49,13 @@ error CommunityPool__UnsupportedTokenBehavior();
 /// - The fee is deducted FROM the gross amount; a funder is never charged gross + fee, and the
 ///   ERC-20 path never pulls more than `grossAmount` (an allowance of exactly `grossAmount`
 ///   suffices).
-/// - `minimumUsd` is evaluated against the GROSS contribution, before the fee.
+/// - `minimumUsd` is evaluated against the GROSS contribution, before the fee, using a validated
+///   Chainlink price: positive answer, completed round, non-future timestamp, and age within the
+///   pool's immutable per-feed `maxPriceAge` (see PriceConverter). Feed decimals are read once at
+///   construction and normalized to 18 decimals. A stale, invalid, or reverting feed makes the
+///   contribution revert BEFORE any asset moves; there is no cached or fallback price. Because
+///   feeds are immutable, a permanently dead feed permanently disables funding of that asset in
+///   that pool. Prices never influence the fee rate, the fee amount, or the amounts transferred.
 /// - The fee is capped at ProtocolConstants.MAX_PROTOCOL_FEE_BPS (3%) here as well as in
 ///   ProtocolConfig: an observed rate above the cap makes funding revert (fail closed).
 /// - A rounding result of feeAmount == 0 is valid and makes no transfer.
@@ -79,19 +85,28 @@ contract CommunityPool is ReentrancyGuard {
         address token;
         address usdFeed;
         uint8 decimals;
+        /// @dev Maximum accepted age (seconds) of the token's USD price; immutable per pool.
+        uint32 maxPriceAge;
     }
 
-    /// @dev Packed: AggregatorV3Interface (20B) + uint8 (1B) fit in a single storage slot.
-    /// A non-zero `feed` doubles as the whitelist flag.
+    /// @dev Packed into a single 32-byte slot: feed (20B) + tokenDecimals (1B) + feedDecimals (1B)
+    /// + maxPriceAge (4B) = 26 bytes. A non-zero `feed` doubles as the whitelist flag.
+    /// `feedDecimals` is captured from the feed at construction so funding never re-queries it.
     struct TokenInfo {
         AggregatorV3Interface feed;
         uint8 decimals;
+        uint8 feedDecimals;
+        uint32 maxPriceAge;
     }
 
     uint256 public immutable minimumUsd;
     uint64 public immutable expiresAt;
     address public immutable deployer;
     AggregatorV3Interface private immutable i_ethUsdFeed;
+    /// @dev ETH/USD feed decimals captured at construction (<= 18).
+    uint8 private immutable i_ethUsdFeedDecimals;
+    /// @dev Maximum accepted age (seconds) of the ETH/USD price; immutable per pool.
+    uint32 private immutable i_ethUsdMaxPriceAge;
 
     /// @notice Shared protocol configuration this pool reads fee parameters from. Immutable: a
     /// pool can never be re-pointed at a different configuration.
@@ -136,10 +151,12 @@ contract CommunityPool is ReentrancyGuard {
         address[] memory coOwners,
         uint64 expiresAt_,
         address ethUsdFeed,
+        uint32 ethUsdMaxPriceAge,
         TokenConfig[] memory tokenConfigs,
         address protocolConfig_
     ) {
         if (ethUsdFeed == address(0)) revert CommunityPool__ZeroAddress();
+        PriceConverter.validateMaxPriceAge(ethUsdMaxPriceAge);
         if (protocolConfig_ == address(0)) revert CommunityPool__ZeroAddress();
         // The reference is immutable and, once fee collection exists, `fund` paths will call
         // into it on every contribution. A pool bound to an address with no code would have
@@ -151,6 +168,9 @@ contract CommunityPool is ReentrancyGuard {
         minimumUsd = minimumUsd_;
         expiresAt = expiresAt_;
         i_ethUsdFeed = AggregatorV3Interface(ethUsdFeed);
+        // Reads `decimals()` once; a reverting or >18-decimal feed fails construction closed.
+        i_ethUsdFeedDecimals = PriceConverter.validateFeedDecimals(AggregatorV3Interface(ethUsdFeed));
+        i_ethUsdMaxPriceAge = ethUsdMaxPriceAge;
         protocolConfig = IProtocolConfig(protocolConfig_);
 
         s_isOwner[msg.sender] = true;
@@ -177,7 +197,13 @@ contract CommunityPool is ReentrancyGuard {
             if (address(s_tokenInfo[cfg.token].feed) != address(0)) {
                 revert CommunityPool__DuplicateToken();
             }
-            s_tokenInfo[cfg.token] = TokenInfo({feed: AggregatorV3Interface(cfg.usdFeed), decimals: cfg.decimals});
+            PriceConverter.validateMaxPriceAge(cfg.maxPriceAge);
+            s_tokenInfo[cfg.token] = TokenInfo({
+                feed: AggregatorV3Interface(cfg.usdFeed),
+                decimals: cfg.decimals,
+                feedDecimals: PriceConverter.validateFeedDecimals(AggregatorV3Interface(cfg.usdFeed)),
+                maxPriceAge: cfg.maxPriceAge
+            });
             s_whitelistedTokens.push(cfg.token);
             tokenAddrs[j] = cfg.token;
             unchecked {
@@ -226,6 +252,21 @@ contract CommunityPool is ReentrancyGuard {
         return s_whitelistedTokens;
     }
 
+    /// @notice Immutable ETH/USD oracle policy of this pool (for deployment verification).
+    function getEthUsdFeed() external view returns (address feed, uint8 feedDecimals, uint32 maxPriceAge) {
+        return (address(i_ethUsdFeed), i_ethUsdFeedDecimals, i_ethUsdMaxPriceAge);
+    }
+
+    /// @notice Immutable oracle policy for a whitelisted token; `feed` is zero for non-whitelisted tokens.
+    function getTokenInfo(address token)
+        external
+        view
+        returns (address feed, uint8 tokenDecimals, uint8 feedDecimals, uint32 maxPriceAge)
+    {
+        TokenInfo memory info = s_tokenInfo[token];
+        return (address(info.feed), info.decimals, info.feedDecimals, info.maxPriceAge);
+    }
+
     /// @notice Current protocol fee parameters, read live from the shared ProtocolConfig.
     /// @dev These are the values a funding call would use if mined now; each funding call
     /// re-reads them at execution time (one coherent snapshot per contribution).
@@ -242,7 +283,7 @@ contract CommunityPool is ReentrancyGuard {
     /// already holds `msg.value`, so sending only the fee out leaves exactly `netAmount`.
     function fund() public payable nonReentrant notExpiredForFunding {
         uint256 grossAmount = msg.value;
-        if (grossAmount.getConversionRate(i_ethUsdFeed) < minimumUsd) {
+        if (grossAmount.getConversionRate(i_ethUsdFeed, i_ethUsdFeedDecimals, i_ethUsdMaxPriceAge) < minimumUsd) {
             revert CommunityPool__BelowMinimumUsd();
         }
         (uint256 feeAmount, address recipient) = _protocolFeeFor(grossAmount);
@@ -262,7 +303,7 @@ contract CommunityPool is ReentrancyGuard {
         TokenInfo memory info = s_tokenInfo[address(token)];
         if (address(info.feed) == address(0)) revert CommunityPool__TokenNotWhitelisted();
         if (grossAmount == 0) revert CommunityPool__BelowMinimumUsd();
-        if (grossAmount.getUsdValue(info.decimals, info.feed) < minimumUsd) {
+        if (grossAmount.getUsdValue(info.decimals, info.feed, info.feedDecimals, info.maxPriceAge) < minimumUsd) {
             revert CommunityPool__BelowMinimumUsd();
         }
         (uint256 feeAmount, address recipient) = _protocolFeeFor(grossAmount);

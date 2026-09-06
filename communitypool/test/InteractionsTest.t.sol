@@ -9,6 +9,8 @@ import {FundCommunityPool} from "../script/Interactions.s.sol";
 
 contract InteractionsTest is Test {
     CommunityPool internal pool;
+    /// @dev Oracle max age for fixtures: generous so time-travel tests exercise expiry, not staleness.
+    uint32 internal constant ORACLE_MAX_AGE = 365 days;
     address internal owner = address(0xA11CE);
 
     function setUp() public {
@@ -18,7 +20,15 @@ contract InteractionsTest is Test {
         CommunityPool.TokenConfig[] memory tks;
         vm.startPrank(owner);
         pool = new CommunityPool(
-            "T", "", 5e18, cos, uint64(block.timestamp + 365 days), address(feed), tks, address(protocolConfig)
+            "T",
+            "",
+            5e18,
+            cos,
+            uint64(block.timestamp + 365 days),
+            address(feed),
+            ORACLE_MAX_AGE,
+            tks,
+            address(protocolConfig)
         );
         vm.stopPrank();
     }

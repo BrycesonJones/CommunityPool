@@ -15,10 +15,21 @@ contract PoolHarness is CommunityPool {
         address[] memory coOwners,
         uint64 expiresAt_,
         address ethUsdFeed,
+        uint32 ethUsdMaxPriceAge,
         TokenConfig[] memory tokenConfigs,
         address protocolConfig_
     )
-        CommunityPool(name_, description_, minimumUsd_, coOwners, expiresAt_, ethUsdFeed, tokenConfigs, protocolConfig_)
+        CommunityPool(
+            name_,
+            description_,
+            minimumUsd_,
+            coOwners,
+            expiresAt_,
+            ethUsdFeed,
+            ethUsdMaxPriceAge,
+            tokenConfigs,
+            protocolConfig_
+        )
     {}
 
     function feeFor(uint256 grossAmount) external view returns (uint256 feeAmount, address recipient) {
