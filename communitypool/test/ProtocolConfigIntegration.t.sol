@@ -15,7 +15,9 @@ import {MockMintableERC20} from "./MockMintableERC20.sol";
 
 /// @notice CommunityPool <-> ProtocolConfig integration for the V2 candidate:
 ///   - pools read the SHARED config live (no per-pool snapshot)
-///   - funding economics are byte-for-byte V1: 100% stays in the pool, the treasury gets nothing
+///   - funding economics: the configured fee is deducted from the gross contribution and sent
+///     to the configured recipient; the net remains in the pool (detailed coverage in
+///     ProtocolFeeFunding.t.sol)
 ///   - control-plane authority (config admin / fee recipient) implies no pool asset authority
 contract ProtocolConfigIntegrationTest is Test {
     event PoolCreated(
@@ -152,7 +154,7 @@ contract ProtocolConfigIntegrationTest is Test {
 
     // ------------------------------------------------------------------ economics unchanged
 
-    function testEthFundingRetainsOneHundredPercentDespiteConfiguredFee() public {
+    function testEthFundingSplitsGrossIntoFeeAndNet() public {
         assertEq(config.protocolFeeBps(), 100, "1% is configured");
         uint256 treasuryBefore = treasuryA.balance;
         uint256 funderBefore = funder.balance;
@@ -160,43 +162,43 @@ contract ProtocolConfigIntegrationTest is Test {
         vm.prank(funder);
         poolA.fund{value: 0.1 ether}();
 
-        assertEq(address(poolA).balance, 0.1 ether, "pool must receive the full contribution");
-        assertEq(treasuryA.balance, treasuryBefore, "treasury must receive nothing");
-        assertEq(funder.balance, funderBefore - 0.1 ether, "funder debited exactly the contribution");
+        assertEq(address(poolA).balance, 0.099 ether, "pool receives net");
+        assertEq(treasuryA.balance - treasuryBefore, 0.001 ether, "treasury receives the fee");
+        assertEq(funder.balance, funderBefore - 0.1 ether, "funder debited exactly the gross contribution");
     }
 
-    function testEthFundingViaReceiveRetainsOneHundredPercent() public {
+    function testEthFundingViaReceiveSplitsIdentically() public {
         uint256 treasuryBefore = treasuryA.balance;
         vm.prank(funder);
         (bool ok,) = address(poolB).call{value: 0.1 ether}("");
         assertTrue(ok);
-        assertEq(address(poolB).balance, 0.1 ether);
-        assertEq(treasuryA.balance, treasuryBefore);
+        assertEq(address(poolB).balance, 0.099 ether);
+        assertEq(treasuryA.balance - treasuryBefore, 0.001 ether);
     }
 
-    function testErc20FundingRetainsOneHundredPercentDespiteConfiguredFee() public {
+    function testErc20FundingSplitsGrossIntoFeeAndNet() public {
         uint256 amount = 200_000; // 0.002 WBTC ~= $120 at $60k, above the $5 minimum
         uint256 treasuryBefore = token.balanceOf(treasuryA);
         uint256 funderBefore = token.balanceOf(funder);
 
         vm.startPrank(funder);
-        token.approve(address(poolA), amount);
+        token.approve(address(poolA), amount); // exactly gross
         poolA.fundERC20(IERC20(address(token)), amount);
         vm.stopPrank();
 
-        assertEq(token.balanceOf(address(poolA)), amount, "pool must hold the full token amount");
-        assertEq(token.balanceOf(treasuryA), treasuryBefore, "treasury token balance unchanged");
-        assertEq(token.balanceOf(funder), funderBefore - amount, "funder debited exactly the amount");
+        assertEq(token.balanceOf(address(poolA)), 198_000, "pool holds net");
+        assertEq(token.balanceOf(treasuryA) - treasuryBefore, 2_000, "treasury receives the fee");
+        assertEq(token.balanceOf(funder), funderBefore - amount, "funder debited exactly gross");
     }
 
-    function testMaxFeeConfiguredStillMovesNothing() public {
+    function testMaxFeeConfiguredIsCappedAtThreePercent() public {
         vm.prank(protocolAdmin);
         config.setProtocolFeeBps(300);
         uint256 treasuryBefore = treasuryA.balance;
         vm.prank(funder);
         poolA.fund{value: 1 ether}();
-        assertEq(address(poolA).balance, 1 ether);
-        assertEq(treasuryA.balance, treasuryBefore);
+        assertEq(address(poolA).balance, 0.97 ether);
+        assertEq(treasuryA.balance - treasuryBefore, 0.03 ether);
     }
 
     // ------------------------------------------------------------------ authority isolation
@@ -223,7 +225,7 @@ contract ProtocolConfigIntegrationTest is Test {
         poolA.cheaperWithdraw();
         vm.stopPrank();
 
-        assertEq(address(poolA).balance, 1 ether, "nothing left the pool");
+        assertEq(address(poolA).balance, 0.99 ether, "nothing left the pool after the fee settled at funding");
     }
 
     function testConfigAdminCannotWithdrawErc20() public {
@@ -239,7 +241,7 @@ contract ProtocolConfigIntegrationTest is Test {
         poolA.withdrawTokenAmount(IERC20(address(token)), 1);
         vm.stopPrank();
 
-        assertEq(token.balanceOf(address(poolA)), 200_000);
+        assertEq(token.balanceOf(address(poolA)), 198_000);
     }
 
     function testFeeRecipientCannotWithdraw() public {

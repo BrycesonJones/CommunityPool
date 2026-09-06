@@ -34,22 +34,64 @@ reads the current values on demand.
 | Config reference | none | `IProtocolConfig public immutable protocolConfig` |
 | Config read | none | `getProtocolFeeConfig() → (feeBps, recipient)`, live |
 | `PoolCreated` | 7 fields | adds `address indexed protocolConfig` |
-| Funding economics | 100% stays in the pool | **100% stays in the pool (unchanged)** |
-| Fee transfer | none | **none** |
+| Funding economics | 100% stays in the pool | gross contribution split: `fee = floor(gross × bps / 10_000)` → recipient, `net = gross − fee` → pool |
+| Fee transfer | none | ETH: checked low-level call to the recipient; ERC-20: `safeTransfer` with exact balance-delta verification |
 | Withdrawal / ownership rules | as today | **identical** |
 | Existing mainnet pools | `0x0b4D…47c0`, `0xb740…B767`, immutable | unaffected; they never charge a fee |
 
-No production funding fee is active. The configured 1% exists only as
-configuration in tests and candidate contracts. There is no ETH fee transfer
-and no ERC-20 fee transfer anywhere in the code. Fee collection is a later,
-separately reviewed change.
+No production funding fee is active: production still deploys the frozen V1
+artifact, no ProtocolConfig is deployed, and the live Fees page still says the
+model is transitioning. Fee collection exists only in the V2 candidate
+(`src/CommunityPool.sol`) and its tests.
+
+## V2 candidate fee economics (Phase 2.3–2.4)
+
+- **Gross semantics.** The amount the funder chooses is the gross contribution
+  (`msg.value`, or the ERC-20 `grossAmount`). The fee is deducted from it; a
+  funder is never charged gross + fee, and the ERC-20 path never pulls more
+  than `grossAmount`, so an allowance of exactly `grossAmount` is sufficient.
+- **Fee math.** `feeAmount = floor(gross × protocolFeeBps / 10_000)` via
+  `Math.mulDiv`; `netAmount = gross − feeAmount`; always `fee + net == gross`
+  and `fee ≤ 3% of gross`. Rounding to a zero fee is valid and makes no
+  transfer. At 100 bps: 10,000 → 100; 1,000 → 10; 100 → 1; 99 → 0.
+- **Minimum.** `minimumUsd` is evaluated on the gross contribution, before the
+  fee. A contribution exactly at the minimum is accepted even though the pool
+  receives slightly less.
+- **One snapshot per contribution.** The rate is read once; the recipient is
+  read only when a fee is due; both are validated; then the transfer happens.
+- **Defense in depth.** The pool re-checks the 300 bps cap and rejects a zero
+  or self (`address(this)`) recipient, so a malformed non-official config fails
+  closed (`CommunityPool__ProtocolFeeExceedsMaximum`,
+  `CommunityPool__InvalidFeeRecipient`). A reverting config read propagates.
+- **ETH.** Fee sent with a checked `call{value}`; the pool already holds
+  `msg.value`, so only the fee leaves. A recipient that rejects ETH reverts the
+  whole contribution (`CommunityPool__ProtocolFeeTransferFailed`); nothing is
+  skipped or retained. Operational consequence: a fee recipient must be able to
+  receive ETH, and a misconfigured recipient blocks fee-bearing ETH
+  contributions until the admin corrects it. `fund`, `receive`, and `fallback`
+  charge identically.
+- **ERC-20.** Pull exactly `grossAmount` with `safeTransferFrom`, forward
+  exactly `feeAmount` with `safeTransfer`, verify both balance deltas. Any
+  deviation reverts (`CommunityPool__UnsupportedTokenBehavior`). **CommunityPool
+  V2 supports ERC-20 assets with exact transfer accounting. Fee-on-transfer /
+  rebasing behavior is unsupported unless explicitly added in a future reviewed
+  contract version.**
+- **Reentrancy.** `fund` and `fundERC20` are `nonReentrant` (OpenZeppelin
+  `ReentrancyGuard`). Withdrawals are not guarded: they carry no per-funder
+  state, their only external call is the payout itself, and a recipient that
+  re-enters can only reach `onlyOwner` paths it was already entitled to.
+- **Events.** `Funded(funder, feeRecipient, gross, fee, net)` and
+  `FundedERC20(token, funder, feeRecipient, gross, fee, net)` are emitted only
+  after all transfers succeed; `feeRecipient` is zero when the fee is zero.
+- **Owners withdraw only what remains.** The paid fee is with the treasury;
+  `cheaperWithdraw` and `releaseExpiredFundsToDeployer` release the net.
 
 ## Authority model
 
 | Actor | May | May not |
 | --- | --- | --- |
 | ProtocolConfig `admin` | set `protocolFeeBps` within 0–300; set `feeRecipient` to any non-zero address (EOA or contract); propose a successor admin | withdraw or move any pool ETH or ERC-20; change pool owners, expiry, minimum, or allowlist; raise the 300 bps cap; renounce (no such function) |
-| ProtocolConfig `feeRecipient` | receive fees once collection exists | anything else; it is not an admin and not a pool owner |
+| ProtocolConfig `feeRecipient` | receive fees (V2 candidate) | anything else; it is not an admin and not a pool owner |
 | CommunityPool owners (deployer + explicit co-owners) | withdraw pool assets before expiry, exactly as today | change protocol configuration |
 
 Being the ProtocolConfig admin grants no CommunityPool ownership or withdrawal

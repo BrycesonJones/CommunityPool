@@ -17,8 +17,17 @@ import {MockV3Aggregator} from "./pricefeeds/V3Aggregator.sol";
 import {MockMintableERC20} from "./MockMintableERC20.sol";
 
 contract CommunityPoolTest is Test {
-    event Funded(address indexed funder, uint256 amount);
-    event FundedERC20(address indexed token, address indexed funder, uint256 amount);
+    event Funded(
+        address indexed funder, address indexed feeRecipient, uint256 grossAmount, uint256 feeAmount, uint256 netAmount
+    );
+    event FundedERC20(
+        address indexed token,
+        address indexed funder,
+        address indexed feeRecipient,
+        uint256 grossAmount,
+        uint256 feeAmount,
+        uint256 netAmount
+    );
 
     receive() external payable {}
 
@@ -46,7 +55,9 @@ contract CommunityPoolTest is Test {
         address[] memory cos = new address[](1);
         cos[0] = address(0xCAFE);
 
-        protocolConfig = new ProtocolConfig(makeAddr("protocolAdmin"), makeAddr("treasury"), 100);
+        // 0 bps: these suites pin V1-equivalent economics (100% retained). Fee-bearing paths are
+        // covered in ProtocolFeeFunding.t.sol and ProtocolConfigIntegration.t.sol.
+        protocolConfig = new ProtocolConfig(makeAddr("protocolAdmin"), makeAddr("treasury"), 0);
         pool = new CommunityPool("Alpha", "desc", 5e18, cos, expiresAt, address(ethFeed), tks, address(protocolConfig));
 
         vm.deal(USER, STARTING_BALANCE);
@@ -79,13 +90,13 @@ contract CommunityPoolTest is Test {
     }
 
     function testFundEthEmitsFundedEvent() public {
-        vm.expectEmit(true, false, false, true, address(pool));
-        emit Funded(USER, SEND_VALUE);
+        vm.expectEmit(true, true, false, true, address(pool));
+        emit Funded(USER, address(0), SEND_VALUE, 0, SEND_VALUE);
         vm.prank(USER);
         pool.fund{value: SEND_VALUE}();
 
-        vm.expectEmit(true, false, false, true, address(pool));
-        emit Funded(USER, SEND_VALUE);
+        vm.expectEmit(true, true, false, true, address(pool));
+        emit Funded(USER, address(0), SEND_VALUE, 0, SEND_VALUE);
         vm.prank(USER);
         pool.fund{value: SEND_VALUE}();
 
@@ -157,8 +168,8 @@ contract CommunityPoolTest is Test {
         uint256 amt = 200_000;
         vm.startPrank(USER);
         token.approve(address(pool), amt);
-        vm.expectEmit(true, true, false, true, address(pool));
-        emit FundedERC20(address(token), USER, amt);
+        vm.expectEmit(true, true, true, true, address(pool));
+        emit FundedERC20(address(token), USER, address(0), amt, 0, amt);
         pool.fundERC20(token, amt);
         vm.stopPrank();
         assertEq(token.balanceOf(address(pool)), amt);

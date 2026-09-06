@@ -118,8 +118,10 @@ and unaffected by anything in this repository.
   production app today. No protocol fee; 100% of every contribution stays in
   the pool.
 - V2 candidate: `src/CommunityPool.sol` with an immutable reference to the
-  shared `ProtocolConfig`, read live via `getProtocolFeeConfig()`. Fee
-  configuration is visible but **not economically active**: funding and
-  withdrawal code is identical to V1.
+  shared `ProtocolConfig`, read live via `getProtocolFeeConfig()`, and, since
+  Phase 2.3–2.4, protocol-fee collection on `fund` / `fundERC20` (fee deducted
+  from the gross contribution, capped at 3%, floor-rounded, sent to the
+  configured recipient; see `docs/protocol-config.md`). Withdrawal and
+  ownership code is identical to V1. Not deployed, not active in production.
 - ProtocolConfig: see `docs/protocol-config.md` (admin role, fee recipient,
   0–300 bps range, two-step admin handoff, no custody authority).

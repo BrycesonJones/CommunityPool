@@ -39,7 +39,9 @@ contract CommunityPoolSecurityTest is Test {
         address[] memory cos = new address[](1);
         cos[0] = CO_OWNER;
 
-        protocolConfig = new ProtocolConfig(makeAddr("protocolAdmin"), makeAddr("treasury"), 100);
+        // 0 bps: these suites pin V1-equivalent economics (100% retained). Fee-bearing paths are
+        // covered in ProtocolFeeFunding.t.sol and ProtocolConfigIntegration.t.sol.
+        protocolConfig = new ProtocolConfig(makeAddr("protocolAdmin"), makeAddr("treasury"), 0);
         pool = new CommunityPool("Sec", "desc", 5e18, cos, expiresAt, address(ethFeed), tks, address(protocolConfig));
 
         vm.deal(USER, 10 ether);

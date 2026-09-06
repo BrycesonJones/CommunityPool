@@ -42,3 +42,25 @@ export type ProtocolFeeConfig = {
 
 export const PROTOCOL_BPS_DENOMINATOR = 10_000n;
 export const PROTOCOL_MAX_FEE_BPS = 300n;
+
+/**
+ * V2 funding-event semantics (Phase 2.3–2.4). `grossAmount === feeAmount + netAmount`;
+ * `feeRecipient` is the zero address when `feeAmount === 0n`.
+ *   Funded(address indexed funder, address indexed feeRecipient, uint256 grossAmount, uint256 feeAmount, uint256 netAmount)
+ *   FundedERC20(address indexed token, address indexed funder, address indexed feeRecipient, uint256 grossAmount, uint256 feeAmount, uint256 netAmount)
+ */
+export type FundedV2Event = {
+  funder: string;
+  feeRecipient: string;
+  grossAmount: bigint;
+  feeAmount: bigint;
+  netAmount: bigint;
+};
+export type FundedERC20V2Event = FundedV2Event & { token: string };
+
+/** Mirrors the contract: floor(gross * bps / 10_000); never rounds up. */
+export function protocolFeeFor(grossAmount: bigint, feeBps: bigint): { feeAmount: bigint; netAmount: bigint } {
+  if (feeBps > PROTOCOL_MAX_FEE_BPS) throw new Error("protocol fee exceeds the 300 bps cap");
+  const feeAmount = (grossAmount * feeBps) / PROTOCOL_BPS_DENOMINATOR;
+  return { feeAmount, netAmount: grossAmount - feeAmount };
+}
