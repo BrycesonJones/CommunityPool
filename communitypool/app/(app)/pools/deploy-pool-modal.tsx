@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { getAddress, isAddress } from "ethers";
 import { useWallet } from "@/components/wallet-provider";
+import { WalletPicker } from "@/components/wallet-picker";
 import { formatUnits } from "ethers";
 import { createClient } from "@/lib/supabase/client";
 import { fetchKycStatus } from "@/lib/profile/kyc";
@@ -144,6 +145,13 @@ export default function DeployPoolModal({ open, onClose, onDeployed, onRequestFu
   const [initialFundSplitLoading, setInitialFundSplitLoading] = useState(false);
   /** Which read or computation stopped the preview, so the UI names the real cause. */
   const [initialFundProblem, setInitialFundProblem] = useState<PreviewProblem | null>(null);
+  /**
+   * The app's wallet picker, opened from the review step. It renders at z-[100], above this
+   * dialog, so it is reachable without closing the deploy modal — which matters because closing
+   * would reset the form. Connection itself stays in the wallet provider; this only opens the
+   * same picker the header uses.
+   */
+  const [walletPickerOpen, setWalletPickerOpen] = useState(false);
   /**
    * Set when the initial contribution was NOT submitted because the protocol fee moved, or could
    * not be confirmed, at one of the two re-read gates. The pool itself is already deployed and is
@@ -1247,10 +1255,16 @@ export default function DeployPoolModal({ open, onClose, onDeployed, onRequestFu
                             role="status"
                           >
                             <p className="text-sm text-zinc-300">{initialFundProblem.message}</p>
-                            <p className="mt-1 text-xs text-zinc-500">
-                              Use <span className="text-zinc-300">Connect wallet</span> at the top
-                              of the page. Your pool details are kept, and the amounts appear here
-                              as soon as a wallet is connected.
+                            <button
+                              type="button"
+                              onClick={() => setWalletPickerOpen(true)}
+                              className="mt-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                            >
+                              Connect wallet
+                            </button>
+                            <p className="mt-2 text-xs text-zinc-500">
+                              Everything you have entered is kept. The amounts appear here as soon
+                              as a wallet is connected.
                             </p>
                           </div>
                         ) : (
@@ -1364,6 +1378,12 @@ export default function DeployPoolModal({ open, onClose, onDeployed, onRequestFu
           </button>
         </div>
       </div>
+      {/*
+        Rendered inside this dialog but at z-[100], so it layers above rather than behind. It is a
+        sibling of the backdrop, not a descendant, so clicks inside it never reach the backdrop's
+        close handler and the deploy form survives the whole connect flow.
+      */}
+      <WalletPicker open={walletPickerOpen} onClose={() => setWalletPickerOpen(false)} />
     </div>
   );
 }

@@ -25,6 +25,7 @@ const {
   erc20UsdToHumanMock,
   erc20UsdToTokenMock,
   connectedSigner,
+  connectWalletMock,
   walletState,
 } = vi.hoisted(() => {
   const connectedSigner = {
@@ -39,6 +40,7 @@ const {
     erc20UsdToHumanMock: vi.fn(),
     erc20UsdToTokenMock: vi.fn(),
     connectedSigner,
+    connectWalletMock: vi.fn(),
     /** Mutable so a test can simulate connecting or disconnecting between renders. */
     walletState: { signer: connectedSigner as unknown, isConnected: true },
   };
@@ -107,6 +109,15 @@ vi.mock("@/components/wallet-provider", () => ({
     connect: vi.fn(),
     disconnect: vi.fn(),
     switchToExpectedNetwork: vi.fn(),
+    // Consumed by the real WalletPicker, which this modal renders.
+    connectors: [
+      { id: "metamask", name: "MetaMask" },
+      { id: "coinbase", name: "Coinbase Wallet" },
+    ],
+    availability: { metamask: true, coinbase: true },
+    isWalletDiscoveryComplete: true,
+    isConnecting: false,
+    connectWallet: connectWalletMock,
   }),
 }));
 
@@ -596,5 +607,167 @@ describe("deploy review renders small amounts distinctly", () => {
     expect(text).toMatch(/0\.12345678 WBTC/);
     expect(text).toMatch(/0\.00123456 WBTC/);
     expect(text).toMatch(/0\.12222222 WBTC/);
+  });
+
+});
+
+/**
+ * The disconnected-wallet action must be usable from inside the dialog.
+ *
+ * DeployPoolModal is a full-screen `fixed inset-0 z-50` overlay whose backdrop closes it, and
+ * closing resets the form. Pointing at the page header was therefore not actionable: reaching it
+ * meant discarding everything typed. The app's own WalletPicker renders at z-[100], so it layers
+ * above this dialog and the whole connect flow happens without losing state.
+ */
+describe("connecting a wallet from the deploy review", () => {
+  const filled = {
+    name: "CommunityPool V2 Production Smoke",
+    description: "Phase 2.8 production smoke test",
+    amount: "0.01",
+  };
+
+  async function reviewWithoutWallet(asset: "eth" | "PAXG" = "eth") {
+    walletState.signer = null;
+    walletState.isConnected = false;
+    const utils = render(<DeployPoolModal open onClose={vi.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText("CommunityPool"), {
+      target: { value: filled.name },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/CommunityPool Description/i), {
+      target: { value: filled.description },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/i }));
+    if (asset !== "eth") fireEvent.click(screen.getByRole("button", { name: asset }));
+    fireEvent.change(screen.getByLabelText(/Amount/i), { target: { value: filled.amount } });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/i }));
+    await waitFor(() => expect(document.querySelector('input[type="date"]')).not.toBeNull());
+    const date = document.querySelector<HTMLInputElement>('input[type="date"]')!;
+    fireEvent.change(date, { target: { value: tomorrowYmd() } });
+    fireEvent.click(screen.getByRole("button", { name: /Review/i }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/connect your wallet/i));
+    return utils;
+  }
+
+  /** Everything the user typed is still on the review step. */
+  function expectFormPreserved(asset = "ETH") {
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    expect(text).toMatch(/Review your pool/i);
+    expect(text).toContain(filled.name);
+    expect(text).toContain(filled.description);
+    expect(text).toMatch(new RegExp(`${asset} · \\$${filled.amount} USD`));
+    expect(text).toMatch(/You only \(connected wallet address\)/i);
+    expect(text).toMatch(new RegExp(tomorrowYmd()));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "1";
+    readChainProtocolFeeBpsMock.mockResolvedValue(100n);
+    weiForUsdMock.mockResolvedValue(3_984_242_408_842n);
+    erc20UsdToHumanMock.mockResolvedValue("1.0");
+    erc20UsdToTokenMock.mockResolvedValue(1_000000000000000000n);
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ allowed: true, deployedPoolCount: 0 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    cleanup();
+    global.fetch = originalFetch;
+    walletState.signer = connectedSigner;
+    walletState.isConnected = true;
+  });
+
+  it("offers an actionable Connect wallet button, not a pointer to the page header", async () => {
+    await reviewWithoutWallet();
+    expect(screen.getByRole("button", { name: /^connect wallet$/i })).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/at the top of the page/i);
+  });
+
+  it("does not prompt for a wallet merely by reaching step 4", async () => {
+    await reviewWithoutWallet();
+    expect(connectWalletMock).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: /choose a wallet/i })).not.toBeInTheDocument();
+  });
+
+  it("opens the app's own wallet picker above the deploy dialog", async () => {
+    await reviewWithoutWallet();
+    fireEvent.click(screen.getByRole("button", { name: /^connect wallet$/i }));
+    const picker = await screen.findByRole("dialog", { name: /choose a wallet/i });
+    expect(picker).toBeInTheDocument();
+    // Layered above the deploy dialog (z-50), so it is actually reachable.
+    expect(picker.className).toContain("z-[100]");
+    expect(screen.getByRole("button", { name: /metamask/i })).toBeInTheDocument();
+  });
+
+  it("delegates the connection to the wallet provider rather than reimplementing it", async () => {
+    await reviewWithoutWallet();
+    fireEvent.click(screen.getByRole("button", { name: /^connect wallet$/i }));
+    await screen.findByRole("dialog", { name: /choose a wallet/i });
+    fireEvent.click(screen.getByRole("button", { name: /metamask/i }));
+    await waitFor(() => expect(connectWalletMock).toHaveBeenCalledWith("metamask"));
+  });
+
+  it("keeps the deploy form intact when wallet selection is cancelled", async () => {
+    await reviewWithoutWallet();
+    fireEvent.click(screen.getByRole("button", { name: /^connect wallet$/i }));
+    await screen.findByRole("dialog", { name: /choose a wallet/i });
+    fireEvent.click(screen.getByRole("button", { name: /close wallet picker/i }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /choose a wallet/i })).not.toBeInTheDocument(),
+    );
+    expectFormPreserved();
+    expect(deployButton()).toBeDisabled();
+    expect(document.body.textContent).toMatch(/connect your wallet/i);
+  });
+
+  it("stays on step 4 with the form intact and resolves the preview after connecting", async () => {
+    const { rerender } = await reviewWithoutWallet();
+    fireEvent.click(screen.getByRole("button", { name: /^connect wallet$/i }));
+    await screen.findByRole("dialog", { name: /choose a wallet/i });
+    fireEvent.click(screen.getByRole("button", { name: /metamask/i }));
+    await waitFor(() => expect(connectWalletMock).toHaveBeenCalled());
+    // The provider hands back a signer; the modal re-renders with wallet context.
+    walletState.signer = connectedSigner;
+    walletState.isConnected = true;
+    rerender(<DeployPoolModal open onClose={vi.fn()} />);
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i));
+    expectFormPreserved();
+    expect(document.body.textContent).not.toMatch(/connect your wallet/i);
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    expect(text).toMatch(/0\.00000398424 ETH/);
+    expect(text).toMatch(/0\.0000000398424 ETH/);
+    expect(text).toMatch(/0\.00000394439 ETH/);
+    expect(deployButton()).toBeEnabled();
+  });
+
+  it("preserves a chosen ERC20 asset across the connect flow", async () => {
+    const { rerender } = await reviewWithoutWallet("PAXG");
+    fireEvent.click(screen.getByRole("button", { name: /^connect wallet$/i }));
+    await screen.findByRole("dialog", { name: /choose a wallet/i });
+    fireEvent.click(screen.getByRole("button", { name: /metamask/i }));
+    walletState.signer = connectedSigner;
+    walletState.isConnected = true;
+    rerender(<DeployPoolModal open onClose={vi.fn()} />);
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i));
+    expectFormPreserved("PAXG");
+    expect(document.body.textContent).toMatch(/PAXG/);
+  });
+
+  it("keeps Deploy disabled until the preview actually resolves", async () => {
+    readChainProtocolFeeBpsMock.mockResolvedValue(null);
+    const { rerender } = await reviewWithoutWallet();
+    expect(deployButton()).toBeDisabled();
+    walletState.signer = connectedSigner;
+    walletState.isConnected = true;
+    rerender(<DeployPoolModal open onClose={vi.fn()} />);
+    // Wallet present but the fee still unreadable: a different state, still blocked.
+    await waitFor(() =>
+      expect(document.body.textContent).toMatch(/could not read the current protocol fee/i),
+    );
+    expect(deployButton()).toBeDisabled();
+    expect(document.body.textContent).not.toMatch(/connect your wallet/i);
   });
 });
