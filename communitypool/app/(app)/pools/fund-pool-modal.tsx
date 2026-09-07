@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { isAddress, getAddress, parseUnits } from "ethers";
 import { useWallet } from "@/components/wallet-provider";
+import { WalletPicker } from "@/components/wallet-picker";
 import {
   fundPoolErc20Exact,
   fundPoolEthExact,
@@ -29,6 +30,7 @@ import {
   buildFundingPreview,
   formatFeeBpsPercent,
   formatTokenAmount,
+  formatTokenAmountExact,
   readLiveProtocolFee,
   type FundingPreview,
 } from "@/lib/onchain/protocol-fee";
@@ -36,6 +38,8 @@ import { weiForUsdContribution } from "@/lib/onchain/price-math";
 import { postClientSecurityEvent } from "@/lib/security/client-security-event";
 
 type Step = 1 | 2 | 3;
+
+const WALLET_REQUIRED_MESSAGE = "Connect your wallet to review and fund this pool.";
 
 type FundKind = "eth" | "erc20";
 
@@ -107,6 +111,13 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
   const [feePreviewLoading, setFeePreviewLoading] = useState(false);
   /** Set when the live rate moved between preview and submit; cleared once the user re-reviews. */
   const [feeRateChanged, setFeeRateChanged] = useState(false);
+  /** Transient "Copied" acknowledgement for the exact spending-cap value. */
+  const [capCopied, setCapCopied] = useState(false);
+  /**
+   * The app's wallet picker, opened from the review step. It renders at z-[100], above this
+   * dialog, so connecting never means closing this modal and losing what was entered.
+   */
+  const [walletPickerOpen, setWalletPickerOpen] = useState(false);
 
   const erc20Presets = useMemo(
     () => getErc20PresetsForPoolChain(initialPool?.chainId, chainId),
@@ -214,6 +225,7 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
     setFeePreview(null);
     setFeePreviewLoading(false);
     setFeeRateChanged(false);
+    setCapCopied(false);
   }, []);
 
   useEffect(() => {
@@ -248,7 +260,11 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
   const loadFeePreview = useCallback(async (clearRateChange = true): Promise<void> => {
     setFeePreview(null);
     if (clearRateChange) setFeeRateChanged(false);
-    if (!signer || chainId === null) return;
+    if (!signer || chainId === null) {
+      // Nothing to read prices or the fee with — a wallet state, not a chain failure.
+      setFeePreview({ kind: "unavailable", message: WALLET_REQUIRED_MESSAGE, problem: "wallet" });
+      return;
+    }
     const addr = poolAddress.trim();
     if (!isAddress(addr)) return;
     setFeePreviewLoading(true);
@@ -291,6 +307,31 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
       setFeePreviewLoading(false);
     }
   }, [signer, chainId, poolAddress, fundKind, fundAmount, erc20Presets, erc20Pick]);
+
+  /**
+   * Copy the bare numeric amount so it pastes straight into a wallet's spending-cap field: no
+   * symbol, separators or labels. Taken from the canonical gross bigint, never from the shortened
+   * display string.
+   */
+  async function copyExactCap(): Promise<void> {
+    if (feePreview?.kind !== "split") return;
+    const value = formatTokenAmountExact(feePreview.split.grossAmount, feePreview.decimals);
+    try {
+      await navigator.clipboard.writeText(value);
+      setCapCopied(true);
+      window.setTimeout(() => setCapCopied(false), 2000);
+    } catch {
+      // Clipboard blocked (permissions, insecure context): the value stays selectable on screen.
+    }
+  }
+
+  const walletReady = Boolean(signer) && chainId !== null;
+  useEffect(() => {
+    if (step !== 3 || !walletReady) return;
+    if (feePreview?.kind === "split" || feePreview?.kind === "no-fee" || feePreviewLoading) return;
+    void loadFeePreview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, walletReady]);
 
   function resolveToken(): string {
     const p = erc20Presets.find((x) => x.id === erc20Pick);
@@ -497,10 +538,13 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
       if (e instanceof AllowanceBelowAmountError) {
         const symbol = feePreview?.kind === "split" ? feePreview.symbol : "this token";
         const decimals = feePreview?.kind === "split" ? feePreview.decimals : 18;
+        // Exact precision here, always: the readable formatter shortened both sides of this
+        // comparison into the same string, so the message read as if they were equal.
         setFundError(
-          `The spending cap you approved (${formatTokenAmount(e.allowance, decimals)} ${symbol}) is ` +
-            `below this contribution of ${formatTokenAmount(e.required, decimals)} ${symbol}. ` +
-            `No funding transaction was sent. Press Fund again and approve at least the funding amount, or go back to change it.`,
+          `Your approved spending cap is ${formatTokenAmountExact(e.allowance, decimals)} ${symbol}, ` +
+            `but this contribution needs ${formatTokenAmountExact(e.required, decimals)} ${symbol}. ` +
+            `No funding transaction was sent. Raise the cap to at least the required amount — the exact ` +
+            `value is shown above — and press Fund again, or go back to change the amount.`,
         );
       } else {
         // The stage travels with the error from the transaction boundary. Inferring it here from
@@ -703,6 +747,31 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
                         {feePreview.symbol}
                       </span>
                     </div>
+                    {feePreview.tokenAddress && (
+                      <div className="mt-3 border-t border-zinc-800 pt-2">
+                        <p className="text-xs text-zinc-500">Exact spending cap</p>
+                        <div className="mt-1 flex items-center gap-2">
+                          <code className="flex-1 break-all font-mono text-xs text-white">
+                            {formatTokenAmountExact(
+                              feePreview.split.grossAmount,
+                              feePreview.decimals,
+                            )}{" "}
+                            {feePreview.symbol}
+                          </code>
+                          <button
+                            type="button"
+                            onClick={() => void copyExactCap()}
+                            className="shrink-0 rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                          >
+                            {capCopied ? "Copied" : "Copy"}
+                          </button>
+                        </div>
+                        <p className="mt-1 text-xs text-zinc-500">
+                          MetaMask may request an Unlimited spending cap. If you choose to set a
+                          custom cap instead, use at least this exact amount.
+                        </p>
+                      </div>
+                    )}
                     <p className="mt-2 text-xs text-zinc-500">
                       The protocol fee comes out of the amount you fund — it is not added on top.
                       Your wallet is debited the funding amount, plus network gas. Amounts are
@@ -713,7 +782,30 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
                     </p>
                   </div>
                 )}
-                {feePreview?.kind === "unavailable" && !feePreviewLoading && (
+                {feePreview?.kind === "unavailable" &&
+                  !feePreviewLoading &&
+                  feePreview.problem === "wallet" && (
+                    <div
+                      className="rounded-lg border border-zinc-700 bg-zinc-900/40 p-3"
+                      role="status"
+                    >
+                      <p className="text-sm text-zinc-300">{feePreview.message}</p>
+                      <button
+                        type="button"
+                        onClick={() => setWalletPickerOpen(true)}
+                        className="mt-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                      >
+                        Connect wallet
+                      </button>
+                      <p className="mt-2 text-xs text-zinc-500">
+                        Everything you have entered is kept. The amounts appear here as soon as a
+                        wallet is connected.
+                      </p>
+                    </div>
+                  )}
+                {feePreview?.kind === "unavailable" &&
+                  !feePreviewLoading &&
+                  feePreview.problem !== "wallet" && (
                   <div
                     className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3"
                     role="alert"
@@ -730,7 +822,7 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
                       Retry
                     </button>
                   </div>
-                )}
+                  )}
                 {feeRateChanged && (
                   <p className="text-sm text-amber-400" role="alert">
                     The protocol fee changed while you were reviewing. Check the updated amounts
@@ -775,12 +867,14 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
             type="button"
             onClick={handleContinue}
             disabled={fundPending || !canSubmitFunding}
-            className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 focus:ring-offset-zinc-950 disabled:opacity-50"
+            className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 focus:ring-offset-zinc-950 disabled:opacity-50 disabled:pointer-events-none"
           >
             {primaryLabel}
           </button>
         </div>
       </div>
+      {/* Sibling of the backdrop and layered at z-[100], so connecting never closes this modal. */}
+      <WalletPicker open={walletPickerOpen} onClose={() => setWalletPickerOpen(false)} />
     </div>
   );
 }

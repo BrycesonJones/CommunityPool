@@ -174,6 +174,26 @@ export function formatTokenAmount(raw: bigint, decimals: number): string {
   return shown === "" ? whole : `${whole}.${shown}`;
 }
 
+/**
+ * Full-precision token-native display, for values a user may copy or compare.
+ *
+ * Unlike `formatTokenAmount` this never shortens: it prints every meaningful digit the token can
+ * express and only drops trailing zeros. Two amounts that differ by one raw unit always render
+ * differently. Use it for a spending cap a user will paste into a wallet, and for explaining a
+ * numeric inequality — the readable formatter collapsed an allowance of 2,270,850,000,000 and a
+ * requirement of 2,270,857,687,598 into the same "0.00000227085", making the production error
+ * message read as though both sides were equal.
+ *
+ * String/bigint throughout: no floating point, no rounding.
+ */
+export function formatTokenAmountExact(raw: bigint, decimals: number): string {
+  const full = formatUnits(raw, decimals);
+  if (!full.includes(".")) return full;
+  const [whole, frac] = full.split(".");
+  const trimmed = frac.replace(/0+$/, "");
+  return trimmed === "" ? whole : `${whole}.${trimmed}`;
+}
+
 /** "1%", "0.75%", "0%" — trailing zeros trimmed, for UI labels. */
 export function formatFeeBpsPercent(feeBps: bigint): string {
   const pct = (Number(feeBps) / Number(PROTOCOL_BPS_DENOMINATOR)) * 100;
