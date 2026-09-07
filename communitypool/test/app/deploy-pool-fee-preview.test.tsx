@@ -24,14 +24,25 @@ const {
   weiForUsdMock,
   erc20UsdToHumanMock,
   erc20UsdToTokenMock,
-} = vi.hoisted(() => ({
-  deployCommunityPoolMock: vi.fn(),
-  fundPoolEthMock: vi.fn(),
-  readChainProtocolFeeBpsMock: vi.fn(),
-  weiForUsdMock: vi.fn(),
-  erc20UsdToHumanMock: vi.fn(),
-  erc20UsdToTokenMock: vi.fn(),
-}));
+  connectedSigner,
+  walletState,
+} = vi.hoisted(() => {
+  const connectedSigner = {
+    getAddress: async () => "0x000000000000000000000000000000000000dEaD",
+    provider: {},
+  };
+  return {
+    deployCommunityPoolMock: vi.fn(),
+    fundPoolEthMock: vi.fn(),
+    readChainProtocolFeeBpsMock: vi.fn(),
+    weiForUsdMock: vi.fn(),
+    erc20UsdToHumanMock: vi.fn(),
+    erc20UsdToTokenMock: vi.fn(),
+    connectedSigner,
+    /** Mutable so a test can simulate connecting or disconnecting between renders. */
+    walletState: { signer: connectedSigner as unknown, isConnected: true },
+  };
+});
 
 vi.mock("@/lib/onchain/community-pool", async () => {
   const actual = await vi.importActual<typeof import("@/lib/onchain/community-pool")>(
@@ -84,9 +95,13 @@ vi.mock("@/lib/security/client-security-event", () => ({
 vi.mock("@/components/wallet-provider", () => ({
   useWallet: () => ({
     walletAddress: "0x000000000000000000000000000000000000dEaD",
-    isConnected: true,
     provider: null,
-    signer: { getAddress: async () => "0x000000000000000000000000000000000000dEaD", provider: {} },
+    get signer() {
+      return walletState.signer;
+    },
+    get isConnected() {
+      return walletState.isConnected;
+    },
     chainId: BigInt(1),
     isWrongNetwork: false,
     connect: vi.fn(),
@@ -101,7 +116,7 @@ const originalFetch = global.fetch;
 const deployButton = () => screen.getByRole("button", { name: /^deploy/i });
 
 /** Fill the deploy form and land on the step-4 review. `asset` picks the initial contribution. */
-async function advanceToReview(asset: "eth" | "PAXG" = "eth") {
+async function advanceToReview(asset: "eth" | "PAXG" | "WBTC" = "eth") {
   fireEvent.change(screen.getByPlaceholderText("CommunityPool"), { target: { value: "Test Pool" } });
   fireEvent.click(screen.getByRole("button", { name: /Continue/i }));
   if (asset !== "eth") fireEvent.click(screen.getByRole("button", { name: asset }));
@@ -465,5 +480,121 @@ describe("deploy review distinguishes fee, price and calculation failures", () =
     await advanceToReview();
     await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(0%\)/i));
     expect(document.body.textContent).not.toMatch(/Protocol fee \(1%\)/i);
+  });
+
+});
+
+/**
+ * Disconnected wallet (Phase 2.8 final polish).
+ *
+ * With no wallet there is nothing to read prices or the fee with. That is a wallet state, not a
+ * chain failure, and must not be dressed up as one — the production smoke test showed
+ * "Could not calculate the initial contribution" when the real requirement was connecting.
+ */
+describe("deploy review with no wallet connected", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "1";
+    readChainProtocolFeeBpsMock.mockResolvedValue(100n);
+    weiForUsdMock.mockResolvedValue(3_984_242_408_842n);
+    erc20UsdToHumanMock.mockResolvedValue("1.0");
+    erc20UsdToTokenMock.mockResolvedValue(1_000000000000000000n);
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ allowed: true, deployedPoolCount: 0 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    cleanup();
+    global.fetch = originalFetch;
+    walletState.signer = connectedSigner;
+    walletState.isConnected = true;
+  });
+
+  it("asks the user to connect rather than reporting a failure", async () => {
+    walletState.signer = null;
+    walletState.isConnected = false;
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() =>
+      expect(document.body.textContent).toMatch(
+        /connect your wallet to calculate the initial contribution/i,
+      ),
+    );
+    const text = document.body.textContent ?? "";
+    expect(text).not.toMatch(/could not read the current protocol fee/i);
+    expect(text).not.toMatch(/price needed to calculate/i);
+    expect(text).not.toMatch(/could not calculate the initial contribution/i);
+  });
+
+  it("keeps Deploy disabled and does not offer Retry as the action", async () => {
+    walletState.signer = null;
+    walletState.isConnected = false;
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() => expect(document.body.textContent).toMatch(/connect your wallet/i));
+    expect(deployButton()).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+  });
+
+  it("resolves the preview once a wallet becomes available", async () => {
+    walletState.signer = null;
+    walletState.isConnected = false;
+    const { rerender } = render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() => expect(document.body.textContent).toMatch(/connect your wallet/i));
+    // Wallet connects while the review is open.
+    walletState.signer = connectedSigner;
+    walletState.isConnected = true;
+    rerender(<DeployPoolModal open onClose={vi.fn()} />);
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i));
+    expect(deployButton()).toBeEnabled();
+    expect(document.body.textContent).not.toMatch(/connect your wallet/i);
+  });
+});
+
+/** Precision of the rendered rows, end to end through the modal. */
+describe("deploy review renders small amounts distinctly", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "1";
+    readChainProtocolFeeBpsMock.mockResolvedValue(100n);
+    weiForUsdMock.mockResolvedValue(3_984_242_408_842n); // $0.01 of ETH, the smoke-test amount
+    erc20UsdToTokenMock.mockResolvedValue(12_345_678n); // 0.12345678 WBTC
+    erc20UsdToHumanMock.mockResolvedValue("0.12345678");
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ allowed: true, deployedPoolCount: 0 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    cleanup();
+    global.fetch = originalFetch;
+  });
+
+  it("shows a visible 1% fee on the $0.01 ETH smoke-test amount", async () => {
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i));
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    expect(text).toMatch(/0\.00000398424 ETH/);
+    expect(text).toMatch(/0\.0000000398424 ETH/);
+    expect(text).toMatch(/0\.00000394439 ETH/);
+    // The old collapsed rendering must not come back.
+    expect(text).not.toMatch(/0\.000003 ETH/);
+  });
+
+  it("shows a WBTC contribution to its full 8 decimals", async () => {
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview("WBTC");
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i));
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    expect(text).toMatch(/0\.12345678 WBTC/);
+    expect(text).toMatch(/0\.00123456 WBTC/);
+    expect(text).toMatch(/0\.12222222 WBTC/);
   });
 });

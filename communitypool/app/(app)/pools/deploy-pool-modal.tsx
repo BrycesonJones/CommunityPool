@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { getAddress, isAddress } from "ethers";
 import { useWallet } from "@/components/wallet-provider";
 import { formatUnits } from "ethers";
@@ -235,11 +235,14 @@ export default function DeployPoolModal({ open, onClose, onDeployed, onRequestFu
    * transient RPC failure asks for a retry instead of deploying a pool and then prompting for a
    * funding signature with unknown economics.
    */
+  const loadInitialFundSplitRef = useRef<(() => void) | null>(null);
+
   const loadInitialFundSplit = useCallback(async (): Promise<void> => {
     setInitialFundSplit(null);
     setInitialFundProblem(null);
     if (!signer || chainId === null) {
-      setInitialFundProblem(describePreviewProblem("calculation"));
+      // Not a chain failure: there is simply no wallet context to read prices or the fee with.
+      setInitialFundProblem(describePreviewProblem("wallet"));
       return;
     }
     const canonical = normalizedFundAmount;
@@ -462,6 +465,23 @@ export default function DeployPoolModal({ open, onClose, onDeployed, onRequestFu
       });
     }
   }
+
+  // Keep the latest loader reachable from the effect below without making that effect depend on
+  // the callback's identity.
+  loadInitialFundSplitRef.current = () => void loadInitialFundSplit();
+
+  /**
+   * A wallet connected (or switched chains) while the review was already open: resolve the
+   * preview without making the user go back a step. Only runs when nothing is resolved yet, so it
+   * never re-reads over a good preview or a fee-change banner.
+   */
+  const walletReady = Boolean(signer) && chainId !== null;
+  useEffect(() => {
+    if (step !== 4 || !walletReady) return;
+    if (initialFundSplit || initialFundSplitLoading) return;
+    loadInitialFundSplitRef.current?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, walletReady]);
 
   async function runDeploy() {
     setDeployError(null);
@@ -1219,6 +1239,18 @@ export default function DeployPoolModal({ open, onClose, onDeployed, onRequestFu
                               never asked to sign a rate you have not seen. It can still change
                               between that last check and your transaction being mined, and can
                               never exceed the 3% maximum.
+                            </p>
+                          </div>
+                        ) : initialFundProblem?.kind === "wallet" ? (
+                          <div
+                            className="rounded-lg border border-zinc-700 bg-zinc-900/40 p-3"
+                            role="status"
+                          >
+                            <p className="text-sm text-zinc-300">{initialFundProblem.message}</p>
+                            <p className="mt-1 text-xs text-zinc-500">
+                              Use <span className="text-zinc-300">Connect wallet</span> at the top
+                              of the page. Your pool details are kept, and the amounts appear here
+                              as soon as a wallet is connected.
                             </p>
                           </div>
                         ) : (
