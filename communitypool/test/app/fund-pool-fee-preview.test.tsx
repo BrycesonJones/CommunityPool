@@ -95,7 +95,7 @@ vi.mock("@/components/wallet-provider", () => ({
   }),
 }));
 
-import { AllowanceBelowAmountError } from "@/lib/onchain/funding-errors";
+import { AllowanceBelowAmountError, FundingStageError } from "@/lib/onchain/funding-errors";
 import FundPoolModal from "@/app/(app)/pools/fund-pool-modal";
 
 const POOL = "0x00000000000000000000000000000000000000A1";
@@ -469,5 +469,93 @@ describe("ERC-20 funding uses exactly the reviewed amount", () => {
     fireEvent.click(screen.getByRole("button", { name: /^fund$/i }));
     await waitFor(() => expect(document.body.textContent).toMatch(/below the pool.s minimum/i));
     expect(document.body.textContent).toMatch(/review a fresh amount/i);
+  });
+
+});
+
+/**
+ * End-to-end stage reporting in the modal.
+ *
+ * The modal no longer guesses which prompt failed; the error carries its own stage. A rejected
+ * funding prompt throws before any transaction hash exists, which the old `lastTxHash` inference
+ * misread as a cancelled approval.
+ */
+describe("fund modal reports the wallet stage that actually failed", () => {
+  const REVIEWED_GROSS = 2_259_000_000_000n;
+  const PAXG = "0x45804880De22913dAFE09f4980848ECE6EcbAf78";
+  const rejection = () => Object.assign(new Error("user rejected action"), { code: "ACTION_REJECTED" });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "1";
+    erc20UsdToHumanMock.mockResolvedValue("0.000002259");
+    weiForUsdMock.mockResolvedValue(1_000000000000000000n);
+    readLiveProtocolFeeMock.mockResolvedValue({ feeBps: 100n, recipient: "0x" + "1".repeat(40) });
+    buildFundingPreviewMock.mockResolvedValue({
+      kind: "split",
+      version: "v2",
+      symbol: "PAXG",
+      decimals: 18,
+      tokenAddress: PAXG,
+      split: {
+        grossAmount: REVIEWED_GROSS,
+        feeAmount: REVIEWED_GROSS / 100n,
+        netAmount: REVIEWED_GROSS - REVIEWED_GROSS / 100n,
+        feeBps: 100n,
+      },
+    });
+  });
+  afterEach(() => cleanup());
+
+  async function reviewThenFund() {
+    render(<FundPoolModal open onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/pool contract address/i), { target: { value: POOL } });
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "PAXG" }));
+    fireEvent.change(await screen.findByLabelText(/amount/i), { target: { value: "0.01" } });
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^fund$/i })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: /^fund$/i }));
+  }
+
+  it("says the APPROVAL was cancelled when the approval prompt is rejected", async () => {
+    fundPoolErc20ExactMock.mockRejectedValue(new FundingStageError("approval", rejection()));
+    await reviewThenFund();
+    await waitFor(() => expect(document.body.textContent).toMatch(/cancelled the approval/i));
+    expect(document.body.textContent).not.toMatch(/cancelled the funding transaction/i);
+  });
+
+  it("says the FUNDING was cancelled when the funding prompt is rejected after approval", async () => {
+    // No transaction hash exists at this point — the exact case the old inference got wrong.
+    fundPoolErc20ExactMock.mockRejectedValue(new FundingStageError("funding", rejection()));
+    await reviewThenFund();
+    await waitFor(() =>
+      expect(document.body.textContent).toMatch(/cancelled the funding transaction/i),
+    );
+    expect(document.body.textContent).not.toMatch(/cancelled the approval/i);
+  });
+
+  it("labels an unknown approval failure as an approval failure", async () => {
+    fundPoolErc20ExactMock.mockRejectedValue(new FundingStageError("approval", new Error("boom")));
+    await reviewThenFund();
+    await waitFor(() => expect(document.body.textContent).toMatch(/approval transaction failed/i));
+  });
+
+  it("labels an unknown funding failure as a funding failure", async () => {
+    fundPoolErc20ExactMock.mockRejectedValue(new FundingStageError("funding", new Error("boom")));
+    await reviewThenFund();
+    await waitFor(() => expect(document.body.textContent).toMatch(/funding transaction failed/i));
+    // The step-2 copy legitimately mentions approvals; only the error label must not.
+    expect(document.body.textContent).not.toMatch(/approval transaction failed/i);
+  });
+
+  it("still classifies by selector when the revert is wrapped in a stage", async () => {
+    fundPoolErc20ExactMock.mockRejectedValue(
+      new FundingStageError("funding", Object.assign(new Error("reverted"), { data: "0x13be252b" })),
+    );
+    await reviewThenFund();
+    await waitFor(() => expect(document.body.textContent).toMatch(/spending cap you approved/i));
+    const text = document.body.textContent ?? "";
+    expect(text).not.toMatch(/CALL_EXCEPTION|estimateGas|0x13be252b|transaction=\{/);
   });
 });

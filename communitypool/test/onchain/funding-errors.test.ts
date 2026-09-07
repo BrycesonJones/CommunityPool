@@ -7,7 +7,12 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { AllowanceBelowAmountError, classifyFundingError } from "@/lib/onchain/funding-errors";
+import {
+  AllowanceBelowAmountError,
+  FundingStageError,
+  classifyFundingError,
+  withFundingStage,
+} from "@/lib/onchain/funding-errors";
 
 /** The exact exception shape the production smoke test produced. */
 const PRODUCTION_ERROR = Object.assign(
@@ -85,5 +90,88 @@ describe("AllowanceBelowAmountError", () => {
     expect(e.required).toBe(2_259_006_291_456n);
     expect(e.required).toBeGreaterThan(e.allowance);
     expect(e).toBeInstanceOf(Error);
+  });
+});
+
+/**
+ * Stage propagation.
+ *
+ * The stage must come from the transaction boundary, never from React state. A rejected *funding*
+ * prompt throws before any transaction hash exists, so inferring the stage from "do we have a
+ * hash yet?" reported it as a cancelled *approval*.
+ */
+describe("FundingStageError", () => {
+  const rejection = Object.assign(new Error("user rejected action"), { code: "ACTION_REJECTED" });
+
+  it("names the funding prompt for a rejection tagged as funding, whatever the fallback says", () => {
+    const wrapped = new FundingStageError("funding", rejection);
+    // Fallback deliberately wrong: the tagged stage must win.
+    const c = classifyFundingError(wrapped, "approval");
+    expect(c.kind).toBe("user_rejected");
+    expect(c.message).toMatch(/cancelled the funding transaction/i);
+    expect(c.message).not.toMatch(/approval/i);
+  });
+
+  it("names the approval prompt for a rejection tagged as approval", () => {
+    const c = classifyFundingError(new FundingStageError("approval", rejection), "funding");
+    expect(c.message).toMatch(/cancelled the approval/i);
+  });
+
+  it("still classifies by revert selector through the wrapper", () => {
+    const wrapped = new FundingStageError("funding", { data: "0x13be252b" });
+    expect(classifyFundingError(wrapped, "approval", "PAXG").kind).toBe("insufficient_allowance");
+    const balance = new FundingStageError("funding", PRODUCTION_ERROR);
+    expect(classifyFundingError(balance, "approval", "PAXG").kind).toBe("insufficient_allowance");
+  });
+
+  it("labels an unknown failure by the stage it happened in", () => {
+    expect(
+      classifyFundingError(new FundingStageError("approval", new Error("boom")), "funding").message,
+    ).toMatch(/approval transaction failed/i);
+    expect(
+      classifyFundingError(new FundingStageError("funding", new Error("boom")), "approval").message,
+    ).toMatch(/funding transaction failed/i);
+  });
+
+  it("keeps the original error reachable for diagnostics without leaking it to the UI", () => {
+    const wrapped = new FundingStageError("funding", PRODUCTION_ERROR);
+    expect(wrapped.cause).toBe(PRODUCTION_ERROR);
+    expect(classifyFundingError(wrapped, "funding", "PAXG").message).not.toMatch(
+      /CALL_EXCEPTION|estimateGas|0x/,
+    );
+  });
+});
+
+describe("withFundingStage", () => {
+  it("tags whatever the wrapped call throws", async () => {
+    await expect(
+      withFundingStage("approval", async () => {
+        throw new Error("nope");
+      }),
+    ).rejects.toBeInstanceOf(FundingStageError);
+    await expect(
+      withFundingStage("funding", async () => {
+        throw new Error("nope");
+      }),
+    ).rejects.toMatchObject({ stage: "funding" });
+  });
+
+  it("passes successful values straight through", async () => {
+    expect(await withFundingStage("funding", async () => 42n)).toBe(42n);
+  });
+
+  it("never re-wraps an allowance shortfall or an already-tagged error", async () => {
+    const shortfall = new AllowanceBelowAmountError(1n, 2n);
+    await expect(
+      withFundingStage("funding", async () => {
+        throw shortfall;
+      }),
+    ).rejects.toBe(shortfall);
+    const tagged = new FundingStageError("approval", new Error("x"));
+    await expect(
+      withFundingStage("funding", async () => {
+        throw tagged;
+      }),
+    ).rejects.toBe(tagged);
   });
 });

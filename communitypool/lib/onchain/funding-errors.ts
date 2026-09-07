@@ -77,16 +77,21 @@ function isUserRejection(e: unknown): boolean {
 }
 
 /**
- * @param stage Which wallet step failed, so a rejection names the right one.
+ * @param fallbackStage Used only when the error carries no stage of its own.
  * @param assetLabel Token symbol, when the failure is asset-specific.
  */
 export function classifyFundingError(
   e: unknown,
-  stage: "approval" | "funding",
+  fallbackStage: "approval" | "funding",
   assetLabel?: string,
 ): ClassifiedFundingError {
   const asset = assetLabel ?? "this token";
-  if (isUserRejection(e)) {
+  // A stage-tagged error knows which prompt was open; everything else is read from its cause, so
+  // rejection codes and revert selectors classify exactly as they would unwrapped.
+  const staged = e instanceof FundingStageError ? e : null;
+  const stage = staged?.stage ?? fallbackStage;
+  const target = staged ? staged.cause : e;
+  if (isUserRejection(target)) {
     return {
       kind: "user_rejected",
       message:
@@ -95,7 +100,7 @@ export function classifyFundingError(
           : "You cancelled the funding transaction in your wallet. Nothing was sent.",
     };
   }
-  const selector = revertSelector(e);
+  const selector = revertSelector(target);
   switch (selector) {
     case REVERT_SELECTORS.paxgInsufficientAllowance:
     case REVERT_SELECTORS.erc20InsufficientAllowance:
@@ -147,6 +152,38 @@ export function classifyFundingError(
             ? "The approval transaction failed. Nothing was sent."
             : "The funding transaction failed. Nothing was sent.",
       };
+  }
+}
+
+/**
+ * Marks which wallet interaction failed.
+ *
+ * The stage cannot be inferred from React state: a rejected *funding* prompt throws before any
+ * transaction hash exists, so "have we got a hash yet?" reports it as a rejected *approval*. Only
+ * the call site knows which prompt was open, so it says so explicitly and keeps the original error
+ * as `cause` — user-rejection codes and revert selectors are still read from that.
+ */
+export class FundingStageError extends Error {
+  readonly stage: "approval" | "funding";
+  override readonly cause: unknown;
+  constructor(stage: "approval" | "funding", cause: unknown) {
+    super(`Funding failed during the ${stage} step.`);
+    this.name = "FundingStageError";
+    this.stage = stage;
+    this.cause = cause;
+  }
+}
+
+/** Run `fn`, tagging anything it throws with the wallet stage it belongs to. */
+export async function withFundingStage<T>(
+  stage: "approval" | "funding",
+  fn: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e instanceof AllowanceBelowAmountError || e instanceof FundingStageError) throw e;
+    throw new FundingStageError(stage, e);
   }
 }
 

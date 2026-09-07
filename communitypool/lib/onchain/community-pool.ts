@@ -23,7 +23,7 @@ import { COMMUNITY_POOL_V2_ARTIFACT } from "./community-pool-v2";
 import { getDefaultErc20TokenConfigs, getPoolChainConfig } from "./pool-chain-config";
 import { weiForUsdContribution } from "./price-math";
 import { getExpectedChainId, networkLabelForChainId } from "@/lib/wallet/expected-chain";
-import { AllowanceBelowAmountError } from "./funding-errors";
+import { AllowanceBelowAmountError, withFundingStage } from "./funding-errors";
 
 export { weiForUsdContribution };
 
@@ -264,7 +264,12 @@ export async function fundPoolEthExact(
   value: bigint,
 ): Promise<ContractTransactionResponse> {
   const pool = new Contract(getAddress(poolAddress), artifact.abi, signer);
-  return pool.fund({ value }) as Promise<ContractTransactionResponse>;
+  // Native ETH has no approval step; tagging it keeps every funding failure classified the same
+  // way regardless of asset.
+  return withFundingStage(
+    "funding",
+    async () => pool.fund({ value }) as Promise<ContractTransactionResponse>,
+  );
 }
 
 /** Converts a USD input to wei at submit time. Used only where no reviewed amount exists. */
@@ -314,19 +319,28 @@ export async function fundPoolErc20Exact(
   const pool = new Contract(poolAddr, artifact.abi, signer);
   const owner = await signer.getAddress();
 
-  let allowance: bigint = BigInt(await erc20.allowance(owner, poolAddr));
+  let allowance: bigint = await withFundingStage("approval", async () =>
+    BigInt(await erc20.allowance(owner, poolAddr)),
+  );
   if (allowance < amount) {
-    // The pool's only `transferFrom` pulls from msg.sender inside fundERC20, so this allowance
-    // cannot be used by owners or anyone else to move the funder's tokens.
-    const approveTx = await erc20.approve(poolAddr, MaxUint256);
-    await approveTx.wait();
-    // Read back rather than assume: the user may have set a smaller cap in the wallet.
-    allowance = BigInt(await erc20.allowance(owner, poolAddr));
+    allowance = await withFundingStage("approval", async () => {
+      // The pool's only `transferFrom` pulls from msg.sender inside fundERC20, so this allowance
+      // cannot be used by owners or anyone else to move the funder's tokens.
+      const approveTx = await erc20.approve(poolAddr, MaxUint256);
+      await approveTx.wait();
+      // Read back rather than assume: the user may have set a smaller cap in the wallet.
+      return BigInt(await erc20.allowance(owner, poolAddr));
+    });
   }
   if (allowance < amount) {
     throw new AllowanceBelowAmountError(allowance, amount);
   }
-  return pool.fundERC20(token, amount) as Promise<ContractTransactionResponse>;
+  // Anything from here belongs to the funding prompt, including a rejection — which throws before
+  // any transaction hash exists, so the stage must travel with the error rather than be guessed.
+  return withFundingStage(
+    "funding",
+    async () => pool.fundERC20(token, amount) as Promise<ContractTransactionResponse>,
+  );
 }
 
 /** @deprecated Use `fundPoolErc20Exact`; kept so existing callers keep compiling. */

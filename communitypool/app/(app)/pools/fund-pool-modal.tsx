@@ -238,9 +238,12 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
   }
 
   /**
-   * Protocol-fee preview for the review step. Uses the same gross amount the funding transaction
-   * will send, so what the user sees is what settles. Prices can move between this read and the
-   * signature, which shifts the gross slightly; the fee *rate* shown stays exact either way.
+   * Protocol-fee preview for the review step.
+   *
+   * The gross computed here is the amount the funding transaction sends: it is frozen at review
+   * time and never re-derived at submit. A later price move therefore does not change the token
+   * debit — it can only mean the contract rejects the contribution as below the pool's minimum,
+   * which surfaces as a clear message asking for a fresh review.
    */
   const loadFeePreview = useCallback(async (clearRateChange = true): Promise<void> => {
     setFeePreview(null);
@@ -500,9 +503,11 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
             `No funding transaction was sent. Press Fund again and approve at least the funding amount, or go back to change it.`,
         );
       } else {
-        const stage: "approval" | "funding" = lastTxHash ? "funding" : "approval";
+        // The stage travels with the error from the transaction boundary. Inferring it here from
+        // lastTxHash was wrong: a rejected funding prompt throws before any hash exists, so it
+        // reported itself as a cancelled approval.
         const symbol = feePreview?.kind === "split" ? feePreview.symbol : undefined;
-        setFundError(classifyFundingError(e, fundKind === "eth" ? "funding" : stage, symbol).message);
+        setFundError(classifyFundingError(e, "funding", symbol).message);
       }
     } finally {
       setFundPending(false);

@@ -46,7 +46,11 @@ import {
 } from "@/lib/onchain/community-pool";
 import { weiForUsdContribution } from "@/lib/onchain/price-math";
 import artifact from "@/lib/onchain/community-pool-v1-artifact.json";
-import { AllowanceBelowAmountError } from "@/lib/onchain/funding-errors";
+import {
+  AllowanceBelowAmountError,
+  FundingStageError,
+  classifyFundingError,
+} from "@/lib/onchain/funding-errors";
 import v2Artifact from "@/lib/onchain/community-pool-v2-artifact.json";
 
 const CHAIN_ID = 31337n; // Anvil default; the only local chain pool-chain-config knows
@@ -96,6 +100,12 @@ class MockRpc extends JsonRpcApiProvider {
   allowance = 0n;
   /** Allowance reported after an approve transaction — lets a test model an edited cap. */
   allowanceAfterApprove: bigint | null = null;
+  /** Simulate the wallet rejecting the next transaction the app tries to send. */
+  rejectNextSend = false;
+  /** Simulate the wallet rejecting only transactions whose calldata starts with this selector. */
+  rejectSendMatching: string | null = null;
+  /** Simulate a non-rejection failure for transactions matching this selector. */
+  failSendMatching: string | null = null;
   decimals = 18n;
   code = "0x";
   whitelisted: string[] = [];
@@ -163,6 +173,16 @@ class MockRpc extends JsonRpcApiProvider {
       }
       case "eth_sendRawTransaction": {
         const tx = Transaction.from(params[0] as string);
+        const rejects =
+          this.rejectNextSend ||
+          (this.rejectSendMatching !== null && tx.data.startsWith(this.rejectSendMatching));
+        if (rejects) {
+          this.rejectNextSend = false;
+          throw Object.assign(new Error("user rejected action"), { code: "ACTION_REJECTED" });
+        }
+        if (this.failSendMatching !== null && tx.data.startsWith(this.failSendMatching)) {
+          throw new Error("mock: transaction failed");
+        }
         this.nonce += 1;
         const rec: SentTx = {
           hash: tx.hash!,
@@ -368,6 +388,61 @@ describe("ethers boundary: ERC-20 funding (allowance → approve → fundERC20)"
       expect(rpc.sent).toHaveLength(1);
       expect(rpc.sent[0].data.startsWith(SEL.approve)).toBe(true);
       expect(rpc.sent.some((t) => t.data.startsWith(SEL.fundERC20))).toBe(false);
+    });
+
+    /**
+     * Stage integration: the failing prompt must identify itself, because the modal can no longer
+     * infer it. A rejected funding prompt throws before any transaction hash exists.
+     */
+    it("tags a rejected approval prompt as the approval stage", async () => {
+      rpc.allowance = 0n;
+      rpc.rejectNextSend = true;
+      const err = await fundPoolErc20Exact(signer, POOL, TOKEN, REVIEWED_GROSS).catch((e) => e);
+      expect(err).toBeInstanceOf(FundingStageError);
+      expect(err.stage).toBe("approval");
+      expect(classifyFundingError(err, "funding", "PAXG").message).toMatch(
+        /cancelled the approval/i,
+      );
+      expect(rpc.sent).toHaveLength(0);
+    });
+
+    it("tags a rejected funding prompt as the funding stage, after a successful approval", async () => {
+      rpc.allowance = 0n;
+      rpc.allowanceAfterApprove = MaxUint256;
+      rpc.rejectSendMatching = SEL.fundERC20;
+      const err = await fundPoolErc20Exact(signer, POOL, TOKEN, REVIEWED_GROSS).catch((e) => e);
+      expect(err).toBeInstanceOf(FundingStageError);
+      expect(err.stage).toBe("funding");
+      // The approval really did go out first — this is exactly the case the old inference got wrong.
+      expect(rpc.sent).toHaveLength(1);
+      expect(rpc.sent[0].data.startsWith(SEL.approve)).toBe(true);
+      const message = classifyFundingError(err, "approval", "PAXG").message;
+      expect(message).toMatch(/cancelled the funding transaction/i);
+      expect(message).not.toMatch(/approval/i);
+    });
+
+    it("tags an unknown funding failure as the funding stage", async () => {
+      rpc.allowance = REVIEWED_GROSS;
+      rpc.failSendMatching = SEL.fundERC20;
+      const err = await fundPoolErc20Exact(signer, POOL, TOKEN, REVIEWED_GROSS).catch((e) => e);
+      expect(err.stage).toBe("funding");
+      expect(classifyFundingError(err, "approval").message).toMatch(/funding transaction failed/i);
+    });
+
+    it("tags an unknown approval failure as the approval stage", async () => {
+      rpc.allowance = 0n;
+      rpc.failSendMatching = SEL.approve;
+      const err = await fundPoolErc20Exact(signer, POOL, TOKEN, REVIEWED_GROSS).catch((e) => e);
+      expect(err.stage).toBe("approval");
+      expect(classifyFundingError(err, "funding").message).toMatch(/approval transaction failed/i);
+    });
+
+    it("leaves the allowance shortfall untagged so it keeps its own message", async () => {
+      rpc.allowance = 0n;
+      rpc.allowanceAfterApprove = REVIEWED_GROSS;
+      const err = await fundPoolErc20Exact(signer, POOL, TOKEN, DRIFTED_GROSS).catch((e) => e);
+      expect(err).toBeInstanceOf(AllowanceBelowAmountError);
+      expect(err).not.toBeInstanceOf(FundingStageError);
     });
 
     it("reads the allowance back after approving instead of assuming it was granted in full", async () => {
