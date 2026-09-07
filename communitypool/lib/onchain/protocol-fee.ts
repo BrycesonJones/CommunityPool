@@ -136,8 +136,28 @@ export function previewFundingSplit(grossAmount: bigint, feeBps: bigint): Fundin
 }
 
 /**
- * Token-native display for a preview row. Trims trailing zeros but always keeps at least the
- * first significant digit, so a small fee is shown as a real number rather than rounded to 0.
+ * Significant digits kept when an amount is too long to print exactly. Six is enough that a 1%
+ * fee never collapses into its gross: at 1%, gross and net differ in the third significant digit.
+ */
+const DISPLAY_SIGNIFICANT_DIGITS = 6;
+
+/** Beyond this many fraction characters an exact value is unreadable, so it is truncated. */
+const EXACT_FRACTION_LIMIT = 10;
+
+/**
+ * Token-native display for a preview row.
+ *
+ * Display only — it never touches the bigint the transaction uses. Two rules:
+ *
+ *  - Print the exact value whenever its fraction is short enough to read. Every WBTC (8 dp) and
+ *    XAU₮ (6 dp) amount qualifies, so those assets are always shown to their full on-chain
+ *    precision and never beyond it.
+ *  - Otherwise keep six significant digits starting at the first non-zero one. A tiny 18-decimal
+ *    amount would otherwise truncate to a single significant digit, which is what made a gross of
+ *    0.000003984… and a net of 0.000003944… both render as "0.000003" — hiding the very fee this
+ *    row exists to disclose.
+ *
+ * Trailing zeros are dropped, and a whole number prints without a decimal point.
  */
 export function formatTokenAmount(raw: bigint, decimals: number): string {
   const full = formatUnits(raw, decimals);
@@ -145,9 +165,13 @@ export function formatTokenAmount(raw: bigint, decimals: number): string {
   const [whole, frac] = full.split(".");
   const trimmed = frac.replace(/0+$/, "");
   if (trimmed === "") return whole;
+  if (trimmed.length <= Math.min(decimals, EXACT_FRACTION_LIMIT)) {
+    return `${whole}.${trimmed}`;
+  }
   const firstSig = trimmed.search(/[1-9]/);
-  const keep = Math.max(4, firstSig + 1);
-  return `${whole}.${trimmed.slice(0, keep)}`;
+  const keep = Math.min(decimals, firstSig + DISPLAY_SIGNIFICANT_DIGITS);
+  const shown = trimmed.slice(0, keep).replace(/0+$/, "");
+  return shown === "" ? whole : `${whole}.${shown}`;
 }
 
 /** "1%", "0.75%", "0%" — trailing zeros trimmed, for UI labels. */
@@ -226,7 +250,7 @@ function readErrorMessage(e: unknown): string {
  * Phase 2.8 smoke test hit exactly that, where a price-read failure was reported as
  * "could not read the current protocol fee".
  */
-export type PreviewProblemKind = "fee" | "price" | "calculation";
+export type PreviewProblemKind = "wallet" | "fee" | "price" | "calculation";
 
 export type PreviewProblem = {
   kind: PreviewProblemKind;
@@ -240,6 +264,11 @@ export function describePreviewProblem(
   assetLabel?: string,
 ): PreviewProblem {
   switch (kind) {
+    case "wallet":
+      return {
+        kind,
+        message: "Connect your wallet to calculate the initial contribution.",
+      };
     case "fee":
       return {
         kind,

@@ -24,14 +24,27 @@ const {
   weiForUsdMock,
   erc20UsdToHumanMock,
   erc20UsdToTokenMock,
-} = vi.hoisted(() => ({
-  deployCommunityPoolMock: vi.fn(),
-  fundPoolEthMock: vi.fn(),
-  readChainProtocolFeeBpsMock: vi.fn(),
-  weiForUsdMock: vi.fn(),
-  erc20UsdToHumanMock: vi.fn(),
-  erc20UsdToTokenMock: vi.fn(),
-}));
+  connectedSigner,
+  connectWalletMock,
+  walletState,
+} = vi.hoisted(() => {
+  const connectedSigner = {
+    getAddress: async () => "0x000000000000000000000000000000000000dEaD",
+    provider: {},
+  };
+  return {
+    deployCommunityPoolMock: vi.fn(),
+    fundPoolEthMock: vi.fn(),
+    readChainProtocolFeeBpsMock: vi.fn(),
+    weiForUsdMock: vi.fn(),
+    erc20UsdToHumanMock: vi.fn(),
+    erc20UsdToTokenMock: vi.fn(),
+    connectedSigner,
+    connectWalletMock: vi.fn(),
+    /** Mutable so a test can simulate connecting or disconnecting between renders. */
+    walletState: { signer: connectedSigner as unknown, isConnected: true },
+  };
+});
 
 vi.mock("@/lib/onchain/community-pool", async () => {
   const actual = await vi.importActual<typeof import("@/lib/onchain/community-pool")>(
@@ -84,14 +97,27 @@ vi.mock("@/lib/security/client-security-event", () => ({
 vi.mock("@/components/wallet-provider", () => ({
   useWallet: () => ({
     walletAddress: "0x000000000000000000000000000000000000dEaD",
-    isConnected: true,
     provider: null,
-    signer: { getAddress: async () => "0x000000000000000000000000000000000000dEaD", provider: {} },
+    get signer() {
+      return walletState.signer;
+    },
+    get isConnected() {
+      return walletState.isConnected;
+    },
     chainId: BigInt(1),
     isWrongNetwork: false,
     connect: vi.fn(),
     disconnect: vi.fn(),
     switchToExpectedNetwork: vi.fn(),
+    // Consumed by the real WalletPicker, which this modal renders.
+    connectors: [
+      { id: "metamask", name: "MetaMask" },
+      { id: "coinbase", name: "Coinbase Wallet" },
+    ],
+    availability: { metamask: true, coinbase: true },
+    isWalletDiscoveryComplete: true,
+    isConnecting: false,
+    connectWallet: connectWalletMock,
   }),
 }));
 
@@ -101,7 +127,7 @@ const originalFetch = global.fetch;
 const deployButton = () => screen.getByRole("button", { name: /^deploy/i });
 
 /** Fill the deploy form and land on the step-4 review. `asset` picks the initial contribution. */
-async function advanceToReview(asset: "eth" | "PAXG" = "eth") {
+async function advanceToReview(asset: "eth" | "PAXG" | "WBTC" = "eth") {
   fireEvent.change(screen.getByPlaceholderText("CommunityPool"), { target: { value: "Test Pool" } });
   fireEvent.click(screen.getByRole("button", { name: /Continue/i }));
   if (asset !== "eth") fireEvent.click(screen.getByRole("button", { name: asset }));
@@ -465,5 +491,283 @@ describe("deploy review distinguishes fee, price and calculation failures", () =
     await advanceToReview();
     await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(0%\)/i));
     expect(document.body.textContent).not.toMatch(/Protocol fee \(1%\)/i);
+  });
+
+});
+
+/**
+ * Disconnected wallet (Phase 2.8 final polish).
+ *
+ * With no wallet there is nothing to read prices or the fee with. That is a wallet state, not a
+ * chain failure, and must not be dressed up as one — the production smoke test showed
+ * "Could not calculate the initial contribution" when the real requirement was connecting.
+ */
+describe("deploy review with no wallet connected", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "1";
+    readChainProtocolFeeBpsMock.mockResolvedValue(100n);
+    weiForUsdMock.mockResolvedValue(3_984_242_408_842n);
+    erc20UsdToHumanMock.mockResolvedValue("1.0");
+    erc20UsdToTokenMock.mockResolvedValue(1_000000000000000000n);
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ allowed: true, deployedPoolCount: 0 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    cleanup();
+    global.fetch = originalFetch;
+    walletState.signer = connectedSigner;
+    walletState.isConnected = true;
+  });
+
+  it("asks the user to connect rather than reporting a failure", async () => {
+    walletState.signer = null;
+    walletState.isConnected = false;
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() =>
+      expect(document.body.textContent).toMatch(
+        /connect your wallet to calculate the initial contribution/i,
+      ),
+    );
+    const text = document.body.textContent ?? "";
+    expect(text).not.toMatch(/could not read the current protocol fee/i);
+    expect(text).not.toMatch(/price needed to calculate/i);
+    expect(text).not.toMatch(/could not calculate the initial contribution/i);
+  });
+
+  it("keeps Deploy disabled and does not offer Retry as the action", async () => {
+    walletState.signer = null;
+    walletState.isConnected = false;
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() => expect(document.body.textContent).toMatch(/connect your wallet/i));
+    expect(deployButton()).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+  });
+
+  it("resolves the preview once a wallet becomes available", async () => {
+    walletState.signer = null;
+    walletState.isConnected = false;
+    const { rerender } = render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() => expect(document.body.textContent).toMatch(/connect your wallet/i));
+    // Wallet connects while the review is open.
+    walletState.signer = connectedSigner;
+    walletState.isConnected = true;
+    rerender(<DeployPoolModal open onClose={vi.fn()} />);
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i));
+    expect(deployButton()).toBeEnabled();
+    expect(document.body.textContent).not.toMatch(/connect your wallet/i);
+  });
+});
+
+/** Precision of the rendered rows, end to end through the modal. */
+describe("deploy review renders small amounts distinctly", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "1";
+    readChainProtocolFeeBpsMock.mockResolvedValue(100n);
+    weiForUsdMock.mockResolvedValue(3_984_242_408_842n); // $0.01 of ETH, the smoke-test amount
+    erc20UsdToTokenMock.mockResolvedValue(12_345_678n); // 0.12345678 WBTC
+    erc20UsdToHumanMock.mockResolvedValue("0.12345678");
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ allowed: true, deployedPoolCount: 0 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    cleanup();
+    global.fetch = originalFetch;
+  });
+
+  it("shows a visible 1% fee on the $0.01 ETH smoke-test amount", async () => {
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview();
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i));
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    expect(text).toMatch(/0\.00000398424 ETH/);
+    expect(text).toMatch(/0\.0000000398424 ETH/);
+    expect(text).toMatch(/0\.00000394439 ETH/);
+    // The old collapsed rendering must not come back.
+    expect(text).not.toMatch(/0\.000003 ETH/);
+  });
+
+  it("shows a WBTC contribution to its full 8 decimals", async () => {
+    render(<DeployPoolModal open onClose={vi.fn()} />);
+    await advanceToReview("WBTC");
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i));
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    expect(text).toMatch(/0\.12345678 WBTC/);
+    expect(text).toMatch(/0\.00123456 WBTC/);
+    expect(text).toMatch(/0\.12222222 WBTC/);
+  });
+
+});
+
+/**
+ * The disconnected-wallet action must be usable from inside the dialog.
+ *
+ * DeployPoolModal is a full-screen `fixed inset-0 z-50` overlay whose backdrop closes it, and
+ * closing resets the form. Pointing at the page header was therefore not actionable: reaching it
+ * meant discarding everything typed. The app's own WalletPicker renders at z-[100], so it layers
+ * above this dialog and the whole connect flow happens without losing state.
+ */
+describe("connecting a wallet from the deploy review", () => {
+  const filled = {
+    name: "CommunityPool V2 Production Smoke",
+    description: "Phase 2.8 production smoke test",
+    amount: "0.01",
+  };
+
+  async function reviewWithoutWallet(asset: "eth" | "PAXG" = "eth") {
+    walletState.signer = null;
+    walletState.isConnected = false;
+    const utils = render(<DeployPoolModal open onClose={vi.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText("CommunityPool"), {
+      target: { value: filled.name },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/CommunityPool Description/i), {
+      target: { value: filled.description },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/i }));
+    if (asset !== "eth") fireEvent.click(screen.getByRole("button", { name: asset }));
+    fireEvent.change(screen.getByLabelText(/Amount/i), { target: { value: filled.amount } });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/i }));
+    await waitFor(() => expect(document.querySelector('input[type="date"]')).not.toBeNull());
+    const date = document.querySelector<HTMLInputElement>('input[type="date"]')!;
+    fireEvent.change(date, { target: { value: tomorrowYmd() } });
+    fireEvent.click(screen.getByRole("button", { name: /Review/i }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/connect your wallet/i));
+    return utils;
+  }
+
+  /** Everything the user typed is still on the review step. */
+  function expectFormPreserved(asset = "ETH") {
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    expect(text).toMatch(/Review your pool/i);
+    expect(text).toContain(filled.name);
+    expect(text).toContain(filled.description);
+    expect(text).toMatch(new RegExp(`${asset} · \\$${filled.amount} USD`));
+    expect(text).toMatch(/You only \(connected wallet address\)/i);
+    expect(text).toMatch(new RegExp(tomorrowYmd()));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "1";
+    readChainProtocolFeeBpsMock.mockResolvedValue(100n);
+    weiForUsdMock.mockResolvedValue(3_984_242_408_842n);
+    erc20UsdToHumanMock.mockResolvedValue("1.0");
+    erc20UsdToTokenMock.mockResolvedValue(1_000000000000000000n);
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ allowed: true, deployedPoolCount: 0 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    cleanup();
+    global.fetch = originalFetch;
+    walletState.signer = connectedSigner;
+    walletState.isConnected = true;
+  });
+
+  it("offers an actionable Connect wallet button, not a pointer to the page header", async () => {
+    await reviewWithoutWallet();
+    expect(screen.getByRole("button", { name: /^connect wallet$/i })).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/at the top of the page/i);
+  });
+
+  it("does not prompt for a wallet merely by reaching step 4", async () => {
+    await reviewWithoutWallet();
+    expect(connectWalletMock).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: /choose a wallet/i })).not.toBeInTheDocument();
+  });
+
+  it("opens the app's own wallet picker above the deploy dialog", async () => {
+    await reviewWithoutWallet();
+    fireEvent.click(screen.getByRole("button", { name: /^connect wallet$/i }));
+    const picker = await screen.findByRole("dialog", { name: /choose a wallet/i });
+    expect(picker).toBeInTheDocument();
+    // Layered above the deploy dialog (z-50), so it is actually reachable.
+    expect(picker.className).toContain("z-[100]");
+    expect(screen.getByRole("button", { name: /metamask/i })).toBeInTheDocument();
+  });
+
+  it("delegates the connection to the wallet provider rather than reimplementing it", async () => {
+    await reviewWithoutWallet();
+    fireEvent.click(screen.getByRole("button", { name: /^connect wallet$/i }));
+    await screen.findByRole("dialog", { name: /choose a wallet/i });
+    fireEvent.click(screen.getByRole("button", { name: /metamask/i }));
+    await waitFor(() => expect(connectWalletMock).toHaveBeenCalledWith("metamask"));
+  });
+
+  it("keeps the deploy form intact when wallet selection is cancelled", async () => {
+    await reviewWithoutWallet();
+    fireEvent.click(screen.getByRole("button", { name: /^connect wallet$/i }));
+    await screen.findByRole("dialog", { name: /choose a wallet/i });
+    fireEvent.click(screen.getByRole("button", { name: /close wallet picker/i }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /choose a wallet/i })).not.toBeInTheDocument(),
+    );
+    expectFormPreserved();
+    expect(deployButton()).toBeDisabled();
+    expect(document.body.textContent).toMatch(/connect your wallet/i);
+  });
+
+  it("stays on step 4 with the form intact and resolves the preview after connecting", async () => {
+    const { rerender } = await reviewWithoutWallet();
+    fireEvent.click(screen.getByRole("button", { name: /^connect wallet$/i }));
+    await screen.findByRole("dialog", { name: /choose a wallet/i });
+    fireEvent.click(screen.getByRole("button", { name: /metamask/i }));
+    await waitFor(() => expect(connectWalletMock).toHaveBeenCalled());
+    // The provider hands back a signer; the modal re-renders with wallet context.
+    walletState.signer = connectedSigner;
+    walletState.isConnected = true;
+    rerender(<DeployPoolModal open onClose={vi.fn()} />);
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i));
+    expectFormPreserved();
+    expect(document.body.textContent).not.toMatch(/connect your wallet/i);
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    expect(text).toMatch(/0\.00000398424 ETH/);
+    expect(text).toMatch(/0\.0000000398424 ETH/);
+    expect(text).toMatch(/0\.00000394439 ETH/);
+    expect(deployButton()).toBeEnabled();
+  });
+
+  it("preserves a chosen ERC20 asset across the connect flow", async () => {
+    const { rerender } = await reviewWithoutWallet("PAXG");
+    fireEvent.click(screen.getByRole("button", { name: /^connect wallet$/i }));
+    await screen.findByRole("dialog", { name: /choose a wallet/i });
+    fireEvent.click(screen.getByRole("button", { name: /metamask/i }));
+    walletState.signer = connectedSigner;
+    walletState.isConnected = true;
+    rerender(<DeployPoolModal open onClose={vi.fn()} />);
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i));
+    expectFormPreserved("PAXG");
+    expect(document.body.textContent).toMatch(/PAXG/);
+  });
+
+  it("keeps Deploy disabled until the preview actually resolves", async () => {
+    readChainProtocolFeeBpsMock.mockResolvedValue(null);
+    const { rerender } = await reviewWithoutWallet();
+    expect(deployButton()).toBeDisabled();
+    walletState.signer = connectedSigner;
+    walletState.isConnected = true;
+    rerender(<DeployPoolModal open onClose={vi.fn()} />);
+    // Wallet present but the fee still unreadable: a different state, still blocked.
+    await waitFor(() =>
+      expect(document.body.textContent).toMatch(/could not read the current protocol fee/i),
+    );
+    expect(deployButton()).toBeDisabled();
+    expect(document.body.textContent).not.toMatch(/connect your wallet/i);
   });
 });
