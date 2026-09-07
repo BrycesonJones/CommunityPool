@@ -775,10 +775,13 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
                     <p className="mt-2 text-xs text-zinc-500">
                       The protocol fee comes out of the amount you fund — it is not added on top.
                       Your wallet is debited the funding amount, plus network gas. Amounts are
-                      estimated from the current price and settle at the price when your
-                      transaction is mined. The fee rate lives on-chain and is re-checked when you
-                      press Fund; it can still change before your transaction is mined, and can
-                      never exceed the contract’s 3% maximum.
+                      calculated from the current price when you review, and the funding amount
+                      shown is the token amount your wallet will send. If the price moves enough
+                      before your transaction is mined, the contract may reject the contribution as
+                      below the pool minimum; the app will not silently increase your token debit.
+                      The fee rate lives on-chain and is re-checked when you press Fund; it can
+                      still change before your transaction is mined, and can never exceed the
+                      contract’s 3% maximum.
                     </p>
                   </div>
                 )}

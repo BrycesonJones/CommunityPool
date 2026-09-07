@@ -794,4 +794,71 @@ describe("fund review with no wallet connected", () => {
     expect(screen.getByRole("button", { name: /^fund$/i })).toBeEnabled();
     expect(document.body.textContent).not.toMatch(/connect your wallet/i);
   });
+
+});
+
+/**
+ * Review copy must describe the frozen amount.
+ *
+ * Before the canonical-gross fix the token quantity really was re-derived at submit, and the copy
+ * said amounts "settle at the price when your transaction is mined". That is no longer true: the
+ * reviewed bigint is the one sent. A later price move can only cause a below-minimum rejection.
+ */
+describe("fund review explains the frozen funding amount", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "1";
+    walletState.signer = fakeSigner;
+    weiForUsdMock.mockResolvedValue(1_000000000000000000n);
+    erc20UsdToHumanMock.mockResolvedValue("1.0");
+    readLiveProtocolFeeMock.mockResolvedValue({ feeBps: 100n, recipient: "0x" + "1".repeat(40) });
+    buildFundingPreviewMock.mockResolvedValue({
+      kind: "split",
+      version: "v2",
+      symbol: "ETH",
+      decimals: 18,
+      split: {
+        grossAmount: 1_000000000000000000n,
+        feeAmount: 10_000000000000000n,
+        netAmount: 990_000000000000000n,
+        feeBps: 100n,
+      },
+    });
+  });
+  afterEach(() => cleanup());
+
+  async function review() {
+    render(<FundPoolModal open onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/pool contract address/i), { target: { value: POOL } });
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    fireEvent.change(await screen.findByLabelText(/amount/i), { target: { value: "0.01" } });
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i));
+    return (document.body.textContent ?? "").replace(/\s+/g, " ");
+  }
+
+  it("states that the amount shown is the amount the wallet sends", async () => {
+    const text = await review();
+    expect(text).toMatch(/funding amount shown is the token amount your wallet will send/i);
+  });
+
+  it("no longer claims amounts settle at the mining price", async () => {
+    const text = await review();
+    expect(text).not.toMatch(/settle at the price when your transaction is mined/i);
+    expect(text).not.toMatch(/estimated from the current price/i);
+  });
+
+  it("explains that a later price move causes a rejection, not a larger debit", async () => {
+    const text = await review();
+    expect(text).toMatch(/reject the contribution as below the pool minimum/i);
+    expect(text).toMatch(/will not silently increase your token debit/i);
+  });
+
+  it("keeps the fee disclosures intact", async () => {
+    const text = await review();
+    expect(text).toMatch(/not added on top/i);
+    expect(text).toMatch(/re-checked when you press Fund/i);
+    expect(text).toMatch(/can still change before your transaction is mined/i);
+    expect(text).toMatch(/never exceed the contract.s 3% maximum/i);
+  });
 });
