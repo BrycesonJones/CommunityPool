@@ -42,9 +42,15 @@ import {
   withdrawPoolEthAmount,
   withdrawPoolToken,
   withdrawPoolTokenAmount,
+  fundPoolErc20Exact,
 } from "@/lib/onchain/community-pool";
 import { weiForUsdContribution } from "@/lib/onchain/price-math";
 import artifact from "@/lib/onchain/community-pool-v1-artifact.json";
+import {
+  AllowanceBelowAmountError,
+  FundingStageError,
+  classifyFundingError,
+} from "@/lib/onchain/funding-errors";
 import v2Artifact from "@/lib/onchain/community-pool-v2-artifact.json";
 
 const CHAIN_ID = 31337n; // Anvil default; the only local chain pool-chain-config knows
@@ -92,6 +98,14 @@ class MockRpc extends JsonRpcApiProvider {
   sent: SentTx[] = [];
   calls: Array<{ to: string; data: string }> = [];
   allowance = 0n;
+  /** Allowance reported after an approve transaction — lets a test model an edited cap. */
+  allowanceAfterApprove: bigint | null = null;
+  /** Simulate the wallet rejecting the next transaction the app tries to send. */
+  rejectNextSend = false;
+  /** Simulate the wallet rejecting only transactions whose calldata starts with this selector. */
+  rejectSendMatching: string | null = null;
+  /** Simulate a non-rejection failure for transactions matching this selector. */
+  failSendMatching: string | null = null;
   decimals = 18n;
   code = "0x";
   whitelisted: string[] = [];
@@ -159,6 +173,16 @@ class MockRpc extends JsonRpcApiProvider {
       }
       case "eth_sendRawTransaction": {
         const tx = Transaction.from(params[0] as string);
+        const rejects =
+          this.rejectNextSend ||
+          (this.rejectSendMatching !== null && tx.data.startsWith(this.rejectSendMatching));
+        if (rejects) {
+          this.rejectNextSend = false;
+          throw Object.assign(new Error("user rejected action"), { code: "ACTION_REJECTED" });
+        }
+        if (this.failSendMatching !== null && tx.data.startsWith(this.failSendMatching)) {
+          throw new Error("mock: transaction failed");
+        }
         this.nonce += 1;
         const rec: SentTx = {
           hash: tx.hash!,
@@ -168,6 +192,11 @@ class MockRpc extends JsonRpcApiProvider {
           chainId: tx.chainId,
         };
         this.sent.push(rec);
+        // Model a wallet applying an approval: the resulting allowance may be smaller than the
+        // amount requested, because the user can edit the spending cap.
+        if (rec.data.startsWith(SEL.approve) && this.allowanceAfterApprove !== null) {
+          this.allowance = this.allowanceAfterApprove;
+        }
         return rec.hash;
       }
       case "eth_getTransactionReceipt": {
@@ -297,8 +326,10 @@ describe("ethers boundary: ERC-20 funding (allowance → approve → fundERC20)"
   });
 
   it("approves MaxUint256 (not the exact amount) then sends fundERC20, in that order", async () => {
+    // Allowance is 0, and the wallet grants the full request.
     rpc.allowance = 0n;
-    await fundPoolErc20(signer, POOL, TOKEN, 1_000n);
+    rpc.allowanceAfterApprove = MaxUint256;
+    await fundPoolErc20Exact(signer, POOL, TOKEN, 1_000n);
     expect(rpc.sent).toHaveLength(2);
     const [approveTx, fundTx] = rpc.sent;
     expect(approveTx.to).toBe(getAddress(TOKEN));
@@ -310,8 +341,123 @@ describe("ethers boundary: ERC-20 funding (allowance → approve → fundERC20)"
     expect(fundTx.data.startsWith(SEL.fundERC20)).toBe(true);
   });
 
+  /**
+   * Production regression (2026-09-07, PAX Gold).
+   *
+   * The review showed 0.000002259 PAXG; the user used MetaMask's Edit Spending Cap to approve
+   * exactly that (2,259,000,000,000 raw). The old flow then re-converted the USD input, got a
+   * slightly larger amount from a fresh Chainlink round, and called fundERC20 with it — PAXG
+   * reverted with InsufficientAllowance() (0x13be252b) at gas estimation.
+   */
+  describe("exact spending cap (PAXG production regression)", () => {
+    const REVIEWED_GROSS = 2_259_000_000_000n;
+    const DRIFTED_GROSS = 2_259_006_291_456n; // what a fresh conversion would have produced
+
+    it("succeeds when the approved cap exactly equals the reviewed amount", async () => {
+      rpc.allowance = REVIEWED_GROSS;
+      await fundPoolErc20Exact(signer, POOL, TOKEN, REVIEWED_GROSS);
+      // No approval needed, and the funded amount is exactly what was reviewed.
+      expect(rpc.sent).toHaveLength(1);
+      const [, amt] = poolIface.decodeFunctionData("fundERC20", rpc.sent[0].data);
+      expect(amt).toBe(REVIEWED_GROSS);
+    });
+
+    it("succeeds when the cap exceeds the reviewed amount", async () => {
+      rpc.allowance = REVIEWED_GROSS + 1n;
+      await fundPoolErc20Exact(signer, POOL, TOKEN, REVIEWED_GROSS);
+      expect(rpc.sent).toHaveLength(1);
+    });
+
+    it("never funds the drifted amount the old flow would have sent", async () => {
+      rpc.allowance = REVIEWED_GROSS;
+      await fundPoolErc20Exact(signer, POOL, TOKEN, REVIEWED_GROSS);
+      const [, amt] = poolIface.decodeFunctionData("fundERC20", rpc.sent[0].data);
+      expect(amt).toBe(REVIEWED_GROSS);
+      expect(amt).not.toBe(DRIFTED_GROSS);
+      expect(amt).toBeLessThanOrEqual(rpc.allowance);
+    });
+
+    it("refuses before submitting when the approved cap ends up below the amount", async () => {
+      // The user edits the cap down to the reviewed gross while the code asks for more.
+      rpc.allowance = 0n;
+      rpc.allowanceAfterApprove = REVIEWED_GROSS;
+      await expect(fundPoolErc20Exact(signer, POOL, TOKEN, DRIFTED_GROSS)).rejects.toBeInstanceOf(
+        AllowanceBelowAmountError,
+      );
+      // The approval went out; the doomed funding call never did.
+      expect(rpc.sent).toHaveLength(1);
+      expect(rpc.sent[0].data.startsWith(SEL.approve)).toBe(true);
+      expect(rpc.sent.some((t) => t.data.startsWith(SEL.fundERC20))).toBe(false);
+    });
+
+    /**
+     * Stage integration: the failing prompt must identify itself, because the modal can no longer
+     * infer it. A rejected funding prompt throws before any transaction hash exists.
+     */
+    it("tags a rejected approval prompt as the approval stage", async () => {
+      rpc.allowance = 0n;
+      rpc.rejectNextSend = true;
+      const err = await fundPoolErc20Exact(signer, POOL, TOKEN, REVIEWED_GROSS).catch((e) => e);
+      expect(err).toBeInstanceOf(FundingStageError);
+      expect(err.stage).toBe("approval");
+      expect(classifyFundingError(err, "funding", "PAXG").message).toMatch(
+        /cancelled the approval/i,
+      );
+      expect(rpc.sent).toHaveLength(0);
+    });
+
+    it("tags a rejected funding prompt as the funding stage, after a successful approval", async () => {
+      rpc.allowance = 0n;
+      rpc.allowanceAfterApprove = MaxUint256;
+      rpc.rejectSendMatching = SEL.fundERC20;
+      const err = await fundPoolErc20Exact(signer, POOL, TOKEN, REVIEWED_GROSS).catch((e) => e);
+      expect(err).toBeInstanceOf(FundingStageError);
+      expect(err.stage).toBe("funding");
+      // The approval really did go out first — this is exactly the case the old inference got wrong.
+      expect(rpc.sent).toHaveLength(1);
+      expect(rpc.sent[0].data.startsWith(SEL.approve)).toBe(true);
+      const message = classifyFundingError(err, "approval", "PAXG").message;
+      expect(message).toMatch(/cancelled the funding transaction/i);
+      expect(message).not.toMatch(/approval/i);
+    });
+
+    it("tags an unknown funding failure as the funding stage", async () => {
+      rpc.allowance = REVIEWED_GROSS;
+      rpc.failSendMatching = SEL.fundERC20;
+      const err = await fundPoolErc20Exact(signer, POOL, TOKEN, REVIEWED_GROSS).catch((e) => e);
+      expect(err.stage).toBe("funding");
+      expect(classifyFundingError(err, "approval").message).toMatch(/funding transaction failed/i);
+    });
+
+    it("tags an unknown approval failure as the approval stage", async () => {
+      rpc.allowance = 0n;
+      rpc.failSendMatching = SEL.approve;
+      const err = await fundPoolErc20Exact(signer, POOL, TOKEN, REVIEWED_GROSS).catch((e) => e);
+      expect(err.stage).toBe("approval");
+      expect(classifyFundingError(err, "funding").message).toMatch(/approval transaction failed/i);
+    });
+
+    it("leaves the allowance shortfall untagged so it keeps its own message", async () => {
+      rpc.allowance = 0n;
+      rpc.allowanceAfterApprove = REVIEWED_GROSS;
+      const err = await fundPoolErc20Exact(signer, POOL, TOKEN, DRIFTED_GROSS).catch((e) => e);
+      expect(err).toBeInstanceOf(AllowanceBelowAmountError);
+      expect(err).not.toBeInstanceOf(FundingStageError);
+    });
+
+    it("reads the allowance back after approving instead of assuming it was granted in full", async () => {
+      rpc.allowance = 0n;
+      rpc.allowanceAfterApprove = REVIEWED_GROSS;
+      await fundPoolErc20Exact(signer, POOL, TOKEN, REVIEWED_GROSS);
+      const allowanceReads = rpc.calls.filter((c) => c.data.startsWith(SEL.allowance));
+      expect(allowanceReads.length).toBeGreaterThanOrEqual(2);
+      expect(rpc.sent).toHaveLength(2);
+    });
+  });
+
   it("fundPoolErc20Human scales by on-chain decimals()", async () => {
     rpc.allowance = MaxUint256;
+    rpc.allowanceAfterApprove = MaxUint256;
     rpc.decimals = 8n; // WBTC-style
     await fundPoolErc20Human(signer, POOL, TOKEN, "0.5");
     const decimalsCall = rpc.calls.find((c) => c.data.startsWith(SEL.decimals));

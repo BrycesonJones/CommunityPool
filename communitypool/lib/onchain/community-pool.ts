@@ -23,6 +23,7 @@ import { COMMUNITY_POOL_V2_ARTIFACT } from "./community-pool-v2";
 import { getDefaultErc20TokenConfigs, getPoolChainConfig } from "./pool-chain-config";
 import { weiForUsdContribution } from "./price-math";
 import { getExpectedChainId, networkLabelForChainId } from "@/lib/wallet/expected-chain";
+import { AllowanceBelowAmountError, withFundingStage } from "./funding-errors";
 
 export { weiForUsdContribution };
 
@@ -251,18 +252,62 @@ export async function deployCommunityPool(
   return { contract, deployTx };
 }
 
+/**
+ * Fund with an exact, already-confirmed wei amount — the value the user reviewed. Keeping the
+ * reviewed number authoritative means the wallet is never asked to send a different amount than
+ * the one on screen; if the price has moved enough that this value no longer clears the pool's
+ * minimum, the contract refuses it and the user reviews a fresh amount.
+ */
+export async function fundPoolEthExact(
+  signer: JsonRpcSigner,
+  poolAddress: string,
+  value: bigint,
+): Promise<ContractTransactionResponse> {
+  const pool = new Contract(getAddress(poolAddress), artifact.abi, signer);
+  // Native ETH has no approval step; tagging it keeps every funding failure classified the same
+  // way regardless of asset.
+  return withFundingStage(
+    "funding",
+    async () => pool.fund({ value }) as Promise<ContractTransactionResponse>,
+  );
+}
+
+/** Converts a USD input to wei at submit time. Used only where no reviewed amount exists. */
+export async function fundPoolEthUsd(
+  signer: JsonRpcSigner,
+  poolAddress: string,
+  ethUsdFeed: string,
+  fundUsdHuman: string,
+): Promise<ContractTransactionResponse> {
+  const value = await weiForUsdContribution(signer, ethUsdFeed, fundUsdHuman);
+  return fundPoolEthExact(signer, poolAddress, value);
+}
+
+/** @deprecated Prefer `fundPoolEthExact` with a reviewed amount. */
 export async function fundPoolEth(
   signer: JsonRpcSigner,
   poolAddress: string,
   ethUsdFeed: string,
   fundUsdHuman: string,
 ): Promise<ContractTransactionResponse> {
-  const pool = new Contract(getAddress(poolAddress), artifact.abi, signer);
-  const value = await weiForUsdContribution(signer, ethUsdFeed, fundUsdHuman);
-  return pool.fund({ value }) as Promise<ContractTransactionResponse>;
+  return fundPoolEthUsd(signer, poolAddress, ethUsdFeed, fundUsdHuman);
 }
 
-export async function fundPoolErc20(
+/**
+ * Fund with an exact, already-confirmed raw token amount.
+ *
+ * `amount` is the bigint the user reviewed. It is never recomputed here: converting the USD input
+ * a second time is what broke the first production ERC-20 contribution — a Chainlink update
+ * between review and submit produced a slightly larger amount than the spending cap the user had
+ * just approved, and PAX Gold reverted the funding call with `InsufficientAllowance()`.
+ *
+ * Allowance handling requests MaxUint256 (so repeat contributions need no second approval) but
+ * never *depends* on getting it: wallets let people edit the cap, and an exact cap equal to the
+ * amount is perfectly valid. After the approval confirms, the resulting allowance is read back;
+ * if it is still short, this throws before any funding transaction is attempted rather than
+ * letting the user pay gas for a call that cannot succeed.
+ */
+export async function fundPoolErc20Exact(
   signer: JsonRpcSigner,
   poolAddress: string,
   tokenAddress: string,
@@ -272,17 +317,40 @@ export async function fundPoolErc20(
   const token = getAddress(tokenAddress);
   const erc20 = new Contract(token, ERC20_ABI, signer);
   const pool = new Contract(poolAddr, artifact.abi, signer);
-  const cur = await erc20.allowance(await signer.getAddress(), poolAddr);
-  // Approve MaxUint256 instead of the exact amount so subsequent funds of
-  // the same (user, pool, token) never trigger another approve TX. This
-  // pool's only `transferFrom` call is in fundERC20(token, amount), which
-  // pulls from msg.sender — the deployer/co-owners cannot drain a funder's
-  // wallet via this allowance.
-  if (cur < amount) {
-    const approveTx = await erc20.approve(poolAddr, MaxUint256);
-    await approveTx.wait();
+  const owner = await signer.getAddress();
+
+  let allowance: bigint = await withFundingStage("approval", async () =>
+    BigInt(await erc20.allowance(owner, poolAddr)),
+  );
+  if (allowance < amount) {
+    allowance = await withFundingStage("approval", async () => {
+      // The pool's only `transferFrom` pulls from msg.sender inside fundERC20, so this allowance
+      // cannot be used by owners or anyone else to move the funder's tokens.
+      const approveTx = await erc20.approve(poolAddr, MaxUint256);
+      await approveTx.wait();
+      // Read back rather than assume: the user may have set a smaller cap in the wallet.
+      return BigInt(await erc20.allowance(owner, poolAddr));
+    });
   }
-  return pool.fundERC20(token, amount) as Promise<ContractTransactionResponse>;
+  if (allowance < amount) {
+    throw new AllowanceBelowAmountError(allowance, amount);
+  }
+  // Anything from here belongs to the funding prompt, including a rejection — which throws before
+  // any transaction hash exists, so the stage must travel with the error rather than be guessed.
+  return withFundingStage(
+    "funding",
+    async () => pool.fundERC20(token, amount) as Promise<ContractTransactionResponse>,
+  );
+}
+
+/** @deprecated Use `fundPoolErc20Exact`; kept so existing callers keep compiling. */
+export async function fundPoolErc20(
+  signer: JsonRpcSigner,
+  poolAddress: string,
+  tokenAddress: string,
+  amount: bigint,
+): Promise<ContractTransactionResponse> {
+  return fundPoolErc20Exact(signer, poolAddress, tokenAddress, amount);
 }
 
 export async function fundPoolErc20Human(

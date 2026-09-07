@@ -158,3 +158,36 @@ fails closed with Retry and Deploy disabled; no rate is ever assumed. `test/onch
 pins the call shape against a wallet that rejects `from`-bearing `eth_call`, reproducing the exact
 production failure.
 
+## Hotfix: ERC-20 approval / amount-drift race (2026-09-07)
+
+The first production ERC-20 contribution failed at gas estimation with PAX Gold's
+`InsufficientAllowance()` (`0x13be252b`). No funding transaction was broadcast and no PAXG moved.
+
+**Root cause.** The flow converted the USD input to a token amount **twice**: once for the review,
+and again inside submit. Between them a Chainlink round updated, so the second conversion produced
+a slightly larger amount than the first. That is invisible while the allowance is `MaxUint256`, but
+the smoke test used MetaMask's Edit Spending Cap to approve exactly the reviewed
+`2,259,000,000,000` raw PAXG. The funding call then asked for more than the cap:
+
+```
+approved  0x20df6e47e00   = 2,259,000,000,000
+attempted 0x20df74…       > the approved cap        -> InsufficientAllowance()
+```
+
+**Fix.** One deliberate contribution now establishes one canonical raw gross. The bigint the review
+displays is the one the fee is computed from, the one the allowance is checked against, and the one
+passed to `fundERC20` — never re-derived after confirmation. The app still *requests* `MaxUint256`
+so repeat contributions need no second approval, but correctness no longer depends on the user
+accepting it: after an approval confirms, the resulting allowance is read back, and if it is still
+short the flow stops before any funding transaction rather than letting the user pay gas for a call
+that cannot succeed. An exact cap equal to the reviewed amount succeeds.
+
+If the price moves enough that the confirmed amount no longer clears `minimumUsd`, the contract
+refuses it and the user reviews a fresh amount; the approved gross is never silently increased to
+compensate.
+
+Failures are also no longer rendered raw. `lib/onchain/funding-errors.ts` maps revert selectors to
+plain sentences — insufficient allowance, insufficient balance, cancelled prompt, below minimum,
+stale price, unsupported token behaviour — with no calldata or provider internals in the UI. The
+unredacted original still reaches the security-event pipeline.
+
