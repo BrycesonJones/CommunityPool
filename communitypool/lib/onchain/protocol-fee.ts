@@ -184,7 +184,15 @@ export type FundingPreview =
   /** Legacy V1 pool: the contract has no protocol fee, so the UI must not imply one. */
   | { kind: "no-fee"; version: "v1" }
   /** V2 pool with the live rate read successfully. `feeAmount` may be 0 (0 bps, or rounding). */
-  | { kind: "split"; version: "v2"; symbol: string; decimals: number; split: FundingSplit }
+  | {
+      kind: "split";
+      version: "v2";
+      symbol: string;
+      decimals: number;
+      /** Checksummed ERC-20 address this amount was priced for; absent for native ETH. */
+      tokenAddress?: string;
+      split: FundingSplit;
+    }
   /**
    * A read failed. `problem` names which one, so a price-feed outage is never reported as a
    * protocol-fee outage. Never substitute a default rate.
@@ -205,8 +213,9 @@ export async function buildFundingPreview(args: {
   grossAmount: bigint;
   symbol: string;
   decimals: number;
+  tokenAddress?: string;
 }): Promise<FundingPreview> {
-  const { provider, poolAddress, grossAmount, symbol, decimals } = args;
+  const { provider, poolAddress, grossAmount, symbol, decimals, tokenAddress } = args;
   let version: PoolContractVersion;
   try {
     version = await detectPoolContractVersion(provider, poolAddress);
@@ -224,7 +233,14 @@ export async function buildFundingPreview(args: {
       : { kind: "unavailable", message: describePreviewProblem("fee").message, problem: "fee" };
   }
   try {
-    return { kind: "split", version, symbol, decimals, split: previewFundingSplit(grossAmount, feeBps) };
+    return {
+      kind: "split",
+      version,
+      symbol,
+      decimals,
+      tokenAddress,
+      split: previewFundingSplit(grossAmount, feeBps),
+    };
   } catch {
     return {
       kind: "unavailable",

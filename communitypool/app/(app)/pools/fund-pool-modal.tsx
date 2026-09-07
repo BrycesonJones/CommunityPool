@@ -4,10 +4,15 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { isAddress, getAddress, parseUnits } from "ethers";
 import { useWallet } from "@/components/wallet-provider";
 import {
-  fundPoolEth,
-  fundPoolErc20Human,
+  fundPoolErc20Exact,
+  fundPoolEthExact,
+  fundPoolEthUsd,
   getPoolWhitelistedTokenAddresses,
 } from "@/lib/onchain/community-pool";
+import {
+  AllowanceBelowAmountError,
+  classifyFundingError,
+} from "@/lib/onchain/funding-errors";
 import {
   getErc20PresetsForPoolChain,
   getPoolChainConfig,
@@ -248,6 +253,7 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
       let grossAmount: bigint;
       let symbol: string;
       let decimals: number;
+      let tokenAddress: string | undefined;
       if (fundKind === "eth") {
         const cfg = getPoolChainConfig(chainId);
         grossAmount = await weiForUsdContribution(signer, cfg.ethUsdPriceFeed, fundAmount.trim());
@@ -261,6 +267,7 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
         grossAmount = parseUnits(human, preset.decimals);
         symbol = preset.symbol;
         decimals = preset.decimals;
+        tokenAddress = getAddress(preset.token);
       }
       setFeePreview(
         await buildFundingPreview({
@@ -269,6 +276,7 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
           grossAmount,
           symbol,
           decimals,
+          tokenAddress,
         }),
       );
     } catch {
@@ -402,22 +410,38 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
         status: "started",
         safe_message: "Pool fund flow started.",
       });
-      const cfg = getPoolChainConfig(chainId);
+      // The amount the user reviewed is the amount that gets sent. Re-deriving it from the USD
+      // input here is what broke the first production ERC-20 contribution: a price update between
+      // review and submit produced a larger token amount than the spending cap just approved.
       let tx;
-      if (fundKind === "eth") {
-        tx = await fundPoolEth(signer, pool, cfg.ethUsdPriceFeed, fundAmount.trim());
+      if (feePreview.kind === "split") {
+        const gross = feePreview.split.grossAmount;
+        tx =
+          fundKind === "eth"
+            ? await fundPoolEthExact(signer, pool, gross)
+            : await fundPoolErc20Exact(signer, pool, feePreview.tokenAddress ?? resolveToken(), gross);
       } else {
-        const token = resolveToken();
-        const preset = erc20Presets.find((x) => x.id === erc20Pick);
-        if (!preset) throw new Error("Token preset not available on this network.");
-        const humanToken = await erc20UsdToHumanAmountString(signer, preset, fundAmount.trim());
-        if (humanToken === null) {
-          setFundError(
-            "Could not convert USD to a token amount (amount may be too small or the price feed unavailable).",
+        // V1 pool: no fee preview to bind to, so convert at submit as before.
+        const cfg = getPoolChainConfig(chainId);
+        if (fundKind === "eth") {
+          tx = await fundPoolEthUsd(signer, pool, cfg.ethUsdPriceFeed, fundAmount.trim());
+        } else {
+          const preset = erc20Presets.find((x) => x.id === erc20Pick);
+          if (!preset) throw new Error("Token preset not available on this network.");
+          const humanToken = await erc20UsdToHumanAmountString(signer, preset, fundAmount.trim());
+          if (humanToken === null) {
+            setFundError(
+              "Could not convert USD to a token amount (amount may be too small or the price feed unavailable).",
+            );
+            return;
+          }
+          tx = await fundPoolErc20Exact(
+            signer,
+            pool,
+            resolveToken(),
+            parseUnits(humanToken, preset.decimals),
           );
-          return;
         }
-        tx = await fundPoolErc20Human(signer, pool, token, humanToken);
       }
       setLastTxHash(tx.hash);
       await postClientSecurityEvent({
@@ -465,7 +489,21 @@ export default function FundPoolModal({ open, onClose, onFunded, initialPool }: 
         error_code: e instanceof Error ? e.message : "fund_failed",
         safe_message: "Pool fund flow failed.",
       });
-      setFundError(e instanceof Error ? e.message : "Funding transaction failed.");
+      // Never surface the raw provider exception: it carries calldata, nested provider objects
+      // and stack traces. The redacted original still reaches the security-event pipeline above.
+      if (e instanceof AllowanceBelowAmountError) {
+        const symbol = feePreview?.kind === "split" ? feePreview.symbol : "this token";
+        const decimals = feePreview?.kind === "split" ? feePreview.decimals : 18;
+        setFundError(
+          `The spending cap you approved (${formatTokenAmount(e.allowance, decimals)} ${symbol}) is ` +
+            `below this contribution of ${formatTokenAmount(e.required, decimals)} ${symbol}. ` +
+            `No funding transaction was sent. Press Fund again and approve at least the funding amount, or go back to change it.`,
+        );
+      } else {
+        const stage: "approval" | "funding" = lastTxHash ? "funding" : "approval";
+        const symbol = feePreview?.kind === "split" ? feePreview.symbol : undefined;
+        setFundError(classifyFundingError(e, fundKind === "eth" ? "funding" : stage, symbol).message);
+      }
     } finally {
       setFundPending(false);
     }

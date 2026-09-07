@@ -18,12 +18,14 @@ const {
   weiForUsdMock,
   readLiveProtocolFeeMock,
   fundPoolEthMock,
+  fundPoolErc20ExactMock,
 } = vi.hoisted(() => ({
   buildFundingPreviewMock: vi.fn(),
   erc20UsdToHumanMock: vi.fn(),
   weiForUsdMock: vi.fn(),
   readLiveProtocolFeeMock: vi.fn(),
   fundPoolEthMock: vi.fn(),
+  fundPoolErc20ExactMock: vi.fn(),
 }));
 
 vi.mock("@/lib/onchain/price-math", async () => {
@@ -63,7 +65,10 @@ vi.mock("@/lib/onchain/community-pool", async () => {
   return {
     ...actual,
     getPoolWhitelistedTokenAddresses: async () => [],
+    fundPoolEthExact: fundPoolEthMock,
+    fundPoolEthUsd: fundPoolEthMock,
     fundPoolEth: fundPoolEthMock,
+    fundPoolErc20Exact: fundPoolErc20ExactMock,
   };
 });
 
@@ -90,6 +95,7 @@ vi.mock("@/components/wallet-provider", () => ({
   }),
 }));
 
+import { AllowanceBelowAmountError } from "@/lib/onchain/funding-errors";
 import FundPoolModal from "@/app/(app)/pools/fund-pool-modal";
 
 const POOL = "0x00000000000000000000000000000000000000A1";
@@ -121,6 +127,7 @@ describe("fund modal protocol-fee preview", () => {
     weiForUsdMock.mockResolvedValue(1_000000000000000000n);
     readLiveProtocolFeeMock.mockResolvedValue({ feeBps: 100n, recipient: "0x" + "1".repeat(40) });
     fundPoolEthMock.mockResolvedValue({ hash: "0x" + "a".repeat(64), wait: async () => ({}) });
+    fundPoolErc20ExactMock.mockResolvedValue({ hash: "0x" + "b".repeat(64), wait: async () => ({}) });
   });
   afterEach(() => cleanup());
 
@@ -329,5 +336,138 @@ describe("fund modal protocol-fee preview", () => {
     expect(text).toMatch(/not added on top/i);
     expect(text).not.toMatch(/1\.01 ETH/);
     expect(text).toMatch(/can never exceed the contract.s 3% maximum/i);
+  });
+});
+
+/**
+ * ERC-20 amount lifecycle (production hotfix, 2026-09-07).
+ *
+ * One deliberate contribution establishes one canonical raw gross. The reviewed bigint is the one
+ * approved against and the one funded — the old flow re-derived it after approval, and a fresh
+ * Chainlink round made it larger than the spending cap the user had just set, so PAX Gold
+ * reverted with InsufficientAllowance().
+ */
+describe("ERC-20 funding uses exactly the reviewed amount", () => {
+  const REVIEWED_GROSS = 2_259_000_000_000n; // 0.000002259 PAXG, the production amount
+  const PAXG = "0x45804880De22913dAFE09f4980848ECE6EcbAf78";
+
+  const paxgSplit = () => ({
+    kind: "split" as const,
+    version: "v2" as const,
+    symbol: "PAXG",
+    decimals: 18,
+    tokenAddress: PAXG,
+    split: {
+      grossAmount: REVIEWED_GROSS,
+      feeAmount: REVIEWED_GROSS / 100n,
+      netAmount: REVIEWED_GROSS - REVIEWED_GROSS / 100n,
+      feeBps: 100n,
+    },
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "1";
+    erc20UsdToHumanMock.mockResolvedValue("0.000002259");
+    weiForUsdMock.mockResolvedValue(1_000000000000000000n);
+    readLiveProtocolFeeMock.mockResolvedValue({ feeBps: 100n, recipient: "0x" + "1".repeat(40) });
+    fundPoolErc20ExactMock.mockResolvedValue({ hash: "0x" + "b".repeat(64), wait: async () => ({}) });
+    buildFundingPreviewMock.mockResolvedValue(paxgSplit());
+  });
+  afterEach(() => cleanup());
+
+  async function reviewPaxg() {
+    render(<FundPoolModal open onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/pool contract address/i), { target: { value: POOL } });
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "PAXG" }));
+    fireEvent.change(await screen.findByLabelText(/amount/i), { target: { value: "0.01" } });
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^fund$/i })).toBeEnabled());
+  }
+
+  it("funds the exact raw amount that was reviewed", async () => {
+    await reviewPaxg();
+    fireEvent.click(screen.getByRole("button", { name: /^fund$/i }));
+    await waitFor(() => expect(fundPoolErc20ExactMock).toHaveBeenCalledTimes(1));
+    const [, poolArg, tokenArg, amountArg] = fundPoolErc20ExactMock.mock.calls[0];
+    expect(poolArg.toLowerCase()).toBe(POOL.toLowerCase());
+    expect(tokenArg.toLowerCase()).toBe(PAXG.toLowerCase());
+    expect(amountArg).toBe(REVIEWED_GROSS);
+  });
+
+  it("does not re-derive the amount from USD after review, even if the price moved", async () => {
+    await reviewPaxg();
+    // A later conversion would now yield more tokens for the same dollars.
+    erc20UsdToHumanMock.mockResolvedValue("0.0000022590062914");
+    fireEvent.click(screen.getByRole("button", { name: /^fund$/i }));
+    await waitFor(() => expect(fundPoolErc20ExactMock).toHaveBeenCalled());
+    expect(fundPoolErc20ExactMock.mock.calls[0][3]).toBe(REVIEWED_GROSS);
+  });
+
+  it("keeps fee + net equal to the reviewed gross, with no surcharge", async () => {
+    await reviewPaxg();
+    const s = paxgSplit().split;
+    expect(s.feeAmount + s.netAmount).toBe(REVIEWED_GROSS);
+    expect(s.feeAmount).toBe(22_590_000_000n);
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    expect(text).toMatch(/0\.000002259 PAXG/);
+    expect(text).toMatch(/0\.00000002259 PAXG/);
+    expect(text).toMatch(/0\.00000223641 PAXG/);
+  });
+
+  it("explains an insufficient spending cap instead of dumping the provider error", async () => {
+    await reviewPaxg();
+    fundPoolErc20ExactMock.mockRejectedValue(
+      new AllowanceBelowAmountError(REVIEWED_GROSS, REVIEWED_GROSS + 6_291_456n),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^fund$/i }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/spending cap you approved/i));
+    const text = document.body.textContent ?? "";
+    expect(text).toMatch(/no funding transaction was sent/i);
+    expect(text).not.toMatch(/CALL_EXCEPTION|estimateGas|0x13be252b|transaction=\{/);
+  });
+
+  it("never renders a raw ethers CALL_EXCEPTION", async () => {
+    await reviewPaxg();
+    const raw = Object.assign(
+      new Error(
+        'execution reverted (unknown custom error) (action="estimateGas", data="0x13be252b", ' +
+          'transaction={ "data": "0x59e1397a0000", "from": "0xB80f", "to": "0xBbE3" }, code=CALL_EXCEPTION)',
+      ),
+      { data: "0x13be252b", code: "CALL_EXCEPTION" },
+    );
+    fundPoolErc20ExactMock.mockRejectedValue(raw);
+    fireEvent.click(screen.getByRole("button", { name: /^fund$/i }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/spending cap/i));
+    const text = document.body.textContent ?? "";
+    expect(text).not.toMatch(/CALL_EXCEPTION/);
+    expect(text).not.toMatch(/estimateGas/);
+    expect(text).not.toMatch(/0x59e1397a/);
+  });
+
+  it("handles a cancelled wallet prompt cleanly", async () => {
+    await reviewPaxg();
+    fundPoolErc20ExactMock.mockRejectedValue(
+      Object.assign(new Error("user rejected action"), { code: "ACTION_REJECTED" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^fund$/i }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/you cancelled/i));
+    expect(document.body.textContent).toMatch(/nothing was sent/i);
+  });
+
+  it("explains an insufficient token balance", async () => {
+    await reviewPaxg();
+    fundPoolErc20ExactMock.mockRejectedValue(Object.assign(new Error("reverted"), { data: "0xe450d38c" }));
+    fireEvent.click(screen.getByRole("button", { name: /^fund$/i }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/does not hold enough PAXG/i));
+  });
+
+  it("explains a below-minimum revert as a price move, not a failure to retry blindly", async () => {
+    await reviewPaxg();
+    fundPoolErc20ExactMock.mockRejectedValue(Object.assign(new Error("reverted"), { data: "0x4a72670c" }));
+    fireEvent.click(screen.getByRole("button", { name: /^fund$/i }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/below the pool.s minimum/i));
+    expect(document.body.textContent).toMatch(/review a fresh amount/i);
   });
 });
