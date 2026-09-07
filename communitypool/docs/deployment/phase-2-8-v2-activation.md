@@ -191,3 +191,26 @@ plain sentences — insufficient allowance, insufficient balance, cancelled prom
 stale price, unsupported token behaviour — with no calldata or provider internals in the UI. The
 unredacted original still reaches the security-event pipeline.
 
+## Hotfix: exact spending-cap precision (2026-09-07)
+
+The retried PAXG contribution was blocked by the allowance preflight — correctly — but with a
+message a person could not act on:
+
+> The spending cap you approved (0.00000227085 PAXG) is below this contribution of 0.00000227085 PAXG.
+
+**Root cause.** The readable formatter shortens amounts to six significant digits. The canonical
+gross was `2,270,857,687,598` raw (`0.000002270857687598` PAXG); the user set MetaMask's cap to the
+shortened value they could see, `2,270,850,000,000` (`0.00000227085` PAXG) — short by `7,687,598`
+raw units. Both sides then rendered as the same string, so the inequality read as an equality.
+
+**Fix.** `formatTokenAmountExact` prints every meaningful digit an asset can express, trimming only
+trailing zeros, and is used for two things: an **Exact spending cap** row with a Copy button in the
+ERC-20 review, and the insufficient-allowance message. The readable formatter still drives the
+gross / fee / net rows. The exact value comes from `feePreview.split.grossAmount` and round-trips
+back to that bigint; it is the gross, never gross + fee, and native ETH shows no cap row since it
+needs no approval.
+
+The Fund modal also gained the same disconnected-wallet state as Deploy: "Connect your wallet to
+review and fund this pool" with an in-modal `WalletPicker` at `z-[100]`, preserving everything
+entered, and a Fund button that cannot be clicked while disabled.
+

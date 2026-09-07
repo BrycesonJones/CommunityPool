@@ -11,6 +11,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
+import { parseUnits } from "ethers";
 
 const {
   buildFundingPreviewMock,
@@ -19,6 +20,7 @@ const {
   readLiveProtocolFeeMock,
   fundPoolEthMock,
   fundPoolErc20ExactMock,
+  connectWalletMock,
 } = vi.hoisted(() => ({
   buildFundingPreviewMock: vi.fn(),
   erc20UsdToHumanMock: vi.fn(),
@@ -26,6 +28,7 @@ const {
   readLiveProtocolFeeMock: vi.fn(),
   fundPoolEthMock: vi.fn(),
   fundPoolErc20ExactMock: vi.fn(),
+  connectWalletMock: vi.fn(),
 }));
 
 vi.mock("@/lib/onchain/price-math", async () => {
@@ -81,21 +84,33 @@ const fakeSigner = {
   provider: { getCode: async () => "0x60806040" },
 };
 
+/** Mutable so a test can simulate a disconnected wallet, then connecting. */
+const walletState: { signer: unknown } = { signer: fakeSigner };
+
 vi.mock("@/components/wallet-provider", () => ({
   useWallet: () => ({
     walletAddress: "0x000000000000000000000000000000000000dEaD",
     isConnected: true,
     provider: null,
-    signer: fakeSigner,
+    get signer() {
+      return walletState.signer;
+    },
     chainId: BigInt(1),
     isWrongNetwork: false,
     connect: vi.fn(),
     disconnect: vi.fn(),
     switchToExpectedNetwork: vi.fn(),
+    // Consumed by the real WalletPicker this modal renders.
+    connectors: [{ id: "metamask", name: "MetaMask" }],
+    availability: { metamask: true },
+    isWalletDiscoveryComplete: true,
+    isConnecting: false,
+    connectWallet: connectWalletMock,
   }),
 }));
 
 import { AllowanceBelowAmountError, FundingStageError } from "@/lib/onchain/funding-errors";
+import { formatTokenAmountExact } from "@/lib/onchain/protocol-fee";
 import FundPoolModal from "@/app/(app)/pools/fund-pool-modal";
 
 const POOL = "0x00000000000000000000000000000000000000A1";
@@ -422,7 +437,7 @@ describe("ERC-20 funding uses exactly the reviewed amount", () => {
       new AllowanceBelowAmountError(REVIEWED_GROSS, REVIEWED_GROSS + 6_291_456n),
     );
     fireEvent.click(screen.getByRole("button", { name: /^fund$/i }));
-    await waitFor(() => expect(document.body.textContent).toMatch(/spending cap you approved/i));
+    await waitFor(() => expect(document.body.textContent).toMatch(/approved spending cap/i));
     const text = document.body.textContent ?? "";
     expect(text).toMatch(/no funding transaction was sent/i);
     expect(text).not.toMatch(/CALL_EXCEPTION|estimateGas|0x13be252b|transaction=\{/);
@@ -557,5 +572,293 @@ describe("fund modal reports the wallet stage that actually failed", () => {
     await waitFor(() => expect(document.body.textContent).toMatch(/spending cap you approved/i));
     const text = document.body.textContent ?? "";
     expect(text).not.toMatch(/CALL_EXCEPTION|estimateGas|0x13be252b|transaction=\{/);
+  });
+});
+
+/**
+ * Exact spending cap (production hotfix, 2026-09-07).
+ *
+ * The review shortened the gross to 0.00000227085 PAXG; the user copied that into MetaMask's
+ * Edit spending cap, and the canonical gross was actually 0.000002270857687598. The PR #13 check
+ * correctly blocked funding — but the message shortened both sides to the same string, so it read
+ * as "0.00000227085 is below 0.00000227085". The review now publishes the exact value to copy,
+ * and the error compares at full precision.
+ */
+describe("exact spending cap for ERC-20 funding", () => {
+  const CANONICAL_GROSS = 2_270_857_687_598n; // 0.000002270857687598 PAXG
+  const APPROVED = 2_270_850_000_000n; // what the shortened display led the user to approve
+  const EXACT_STRING = "0.000002270857687598";
+  const PAXG = "0x45804880De22913dAFE09f4980848ECE6EcbAf78";
+  const writeText = vi.fn<(text: string) => Promise<void>>(() => Promise.resolve());
+
+  const paxgSplit = () => ({
+    kind: "split" as const,
+    version: "v2" as const,
+    symbol: "PAXG",
+    decimals: 18,
+    tokenAddress: PAXG,
+    split: {
+      grossAmount: CANONICAL_GROSS,
+      feeAmount: CANONICAL_GROSS / 100n,
+      netAmount: CANONICAL_GROSS - CANONICAL_GROSS / 100n,
+      feeBps: 100n,
+    },
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "1";
+    walletState.signer = fakeSigner;
+    erc20UsdToHumanMock.mockResolvedValue("0.000002270857687598");
+    weiForUsdMock.mockResolvedValue(1_000000000000000000n);
+    readLiveProtocolFeeMock.mockResolvedValue({ feeBps: 100n, recipient: "0x" + "1".repeat(40) });
+    fundPoolErc20ExactMock.mockResolvedValue({ hash: "0x" + "b".repeat(64), wait: async () => ({}) });
+    buildFundingPreviewMock.mockResolvedValue(paxgSplit());
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+      writable: true,
+    });
+  });
+  afterEach(() => cleanup());
+
+  async function reviewPaxg() {
+    render(<FundPoolModal open onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/pool contract address/i), { target: { value: POOL } });
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "PAXG" }));
+    fireEvent.change(await screen.findByLabelText(/amount/i), { target: { value: "0.01" } });
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^fund$/i })).toBeEnabled());
+  }
+
+  it("keeps the readable rows readable while publishing the exact cap", async () => {
+    await reviewPaxg();
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    // Readable rows are unchanged.
+    expect(text).toMatch(/Funding amount ?0\.00000227085 PAXG/);
+    expect(text).toMatch(/Pool receives/);
+    // And the full-precision value is available to copy.
+    expect(text).toMatch(/Exact spending cap/);
+    expect(text).toContain(EXACT_STRING);
+  });
+
+  it("derives the exact cap from the canonical gross, with no fee added", async () => {
+    await reviewPaxg();
+    expect(parseUnits(EXACT_STRING, 18)).toBe(CANONICAL_GROSS);
+    const text = document.body.textContent ?? "";
+    // The cap is the gross, never gross + fee.
+    const grossPlusFee = formatTokenAmountExact(CANONICAL_GROSS + CANONICAL_GROSS / 100n, 18);
+    expect(text).not.toContain(grossPlusFee);
+  });
+
+  it("copies the bare numeric value, pasteable into a wallet", async () => {
+    await reviewPaxg();
+    fireEvent.click(screen.getByRole("button", { name: /^copy$/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const copied = writeText.mock.calls[0][0];
+    expect(copied).toBe(EXACT_STRING);
+    expect(copied).not.toMatch(/PAXG|,|\s/);
+    // Round-trips to exactly the amount the transaction will use.
+    expect(parseUnits(copied, 18)).toBe(CANONICAL_GROSS);
+    await waitFor(() => expect(screen.getByRole("button", { name: /copied/i })).toBeInTheDocument());
+  });
+
+  it("explains a short cap with two visibly different exact amounts", async () => {
+    await reviewPaxg();
+    fundPoolErc20ExactMock.mockRejectedValue(
+      new AllowanceBelowAmountError(APPROVED, CANONICAL_GROSS),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^fund$/i }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/approved spending cap/i));
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    expect(text).toContain("0.00000227085 PAXG");
+    expect(text).toContain("0.000002270857687598 PAXG");
+    // The production message rendered both sides identically; that must be impossible now.
+    expect(formatTokenAmountExact(APPROVED, 18)).not.toBe(formatTokenAmountExact(CANONICAL_GROSS, 18));
+    expect(text).toMatch(/no funding transaction was sent/i);
+    expect(text).not.toMatch(/CALL_EXCEPTION|estimateGas|transaction=\{/);
+  });
+
+  it("funds when the approved cap equals the canonical gross exactly", async () => {
+    await reviewPaxg();
+    fireEvent.click(screen.getByRole("button", { name: /^fund$/i }));
+    await waitFor(() => expect(fundPoolErc20ExactMock).toHaveBeenCalledTimes(1));
+    expect(fundPoolErc20ExactMock.mock.calls[0][3]).toBe(CANONICAL_GROSS);
+  });
+
+  it("shows no exact-cap block for native ETH, which needs no approval", async () => {
+    buildFundingPreviewMock.mockResolvedValue({
+      kind: "split",
+      version: "v2",
+      symbol: "ETH",
+      decimals: 18,
+      split: {
+        grossAmount: 1_000000000000000000n,
+        feeAmount: 10_000000000000000n,
+        netAmount: 990_000000000000000n,
+        feeBps: 100n,
+      },
+    });
+    render(<FundPoolModal open onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/pool contract address/i), { target: { value: POOL } });
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    fireEvent.change(await screen.findByLabelText(/amount/i), { target: { value: "0.01" } });
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i));
+    expect(document.body.textContent).not.toMatch(/exact spending cap/i);
+  });
+});
+
+/** Disconnected-wallet parity with the Deploy flow. */
+describe("fund review with no wallet connected", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "1";
+    erc20UsdToHumanMock.mockResolvedValue("1.0");
+    weiForUsdMock.mockResolvedValue(1_000000000000000000n);
+    buildFundingPreviewMock.mockResolvedValue({
+      kind: "split",
+      version: "v2",
+      symbol: "ETH",
+      decimals: 18,
+      split: {
+        grossAmount: 1_000000000000000000n,
+        feeAmount: 10_000000000000000n,
+        netAmount: 990_000000000000000n,
+        feeBps: 100n,
+      },
+    });
+  });
+  afterEach(() => {
+    cleanup();
+    walletState.signer = fakeSigner;
+  });
+
+  async function reviewWithoutWallet() {
+    walletState.signer = null;
+    const utils = render(<FundPoolModal open onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/pool contract address/i), { target: { value: POOL } });
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    fireEvent.change(await screen.findByLabelText(/amount/i), { target: { value: "12.34" } });
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/connect your wallet/i));
+    return utils;
+  }
+
+  it("offers an actionable Connect wallet button", async () => {
+    await reviewWithoutWallet();
+    expect(document.body.textContent).toMatch(/connect your wallet to review and fund this pool/i);
+    expect(screen.getByRole("button", { name: /^connect wallet$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^fund$/i })).toBeDisabled();
+    expect(connectWalletMock).not.toHaveBeenCalled();
+  });
+
+  it("a disabled Fund button cannot be clicked or hovered into looking active", async () => {
+    await reviewWithoutWallet();
+    const fund = screen.getByRole("button", { name: /^fund$/i });
+    expect(fund.className).toContain("disabled:pointer-events-none");
+    fireEvent.click(fund);
+    expect(fundPoolEthMock).not.toHaveBeenCalled();
+  });
+
+  it("opens the wallet picker without closing Fund or losing what was entered", async () => {
+    await reviewWithoutWallet();
+    fireEvent.click(screen.getByRole("button", { name: /^connect wallet$/i }));
+    const picker = await screen.findByRole("dialog", { name: /choose a wallet/i });
+    expect(picker.className).toContain("z-[100]");
+    fireEvent.click(screen.getByRole("button", { name: /metamask/i }));
+    await waitFor(() => expect(connectWalletMock).toHaveBeenCalledWith("metamask"));
+    expect(document.body.textContent).toMatch(/Review your funding/i);
+    expect(document.body.textContent).toContain(POOL);
+    expect(document.body.textContent).toContain("12.34");
+  });
+
+  it("cancelling the picker keeps the Fund form intact", async () => {
+    await reviewWithoutWallet();
+    fireEvent.click(screen.getByRole("button", { name: /^connect wallet$/i }));
+    await screen.findByRole("dialog", { name: /choose a wallet/i });
+    fireEvent.click(screen.getByRole("button", { name: /close wallet picker/i }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /choose a wallet/i })).not.toBeInTheDocument(),
+    );
+    expect(document.body.textContent).toContain("12.34");
+    expect(screen.getByRole("button", { name: /^fund$/i })).toBeDisabled();
+  });
+
+  it("resolves the preview in place once a wallet connects", async () => {
+    const { rerender } = await reviewWithoutWallet();
+    walletState.signer = fakeSigner;
+    rerender(<FundPoolModal open onClose={() => {}} />);
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i));
+    expect(screen.getByRole("button", { name: /^fund$/i })).toBeEnabled();
+    expect(document.body.textContent).not.toMatch(/connect your wallet/i);
+  });
+
+});
+
+/**
+ * Review copy must describe the frozen amount.
+ *
+ * Before the canonical-gross fix the token quantity really was re-derived at submit, and the copy
+ * said amounts "settle at the price when your transaction is mined". That is no longer true: the
+ * reviewed bigint is the one sent. A later price move can only cause a below-minimum rejection.
+ */
+describe("fund review explains the frozen funding amount", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NEXT_PUBLIC_EXPECTED_CHAIN_ID = "1";
+    walletState.signer = fakeSigner;
+    weiForUsdMock.mockResolvedValue(1_000000000000000000n);
+    erc20UsdToHumanMock.mockResolvedValue("1.0");
+    readLiveProtocolFeeMock.mockResolvedValue({ feeBps: 100n, recipient: "0x" + "1".repeat(40) });
+    buildFundingPreviewMock.mockResolvedValue({
+      kind: "split",
+      version: "v2",
+      symbol: "ETH",
+      decimals: 18,
+      split: {
+        grossAmount: 1_000000000000000000n,
+        feeAmount: 10_000000000000000n,
+        netAmount: 990_000000000000000n,
+        feeBps: 100n,
+      },
+    });
+  });
+  afterEach(() => cleanup());
+
+  async function review() {
+    render(<FundPoolModal open onClose={() => {}} />);
+    fireEvent.change(screen.getByLabelText(/pool contract address/i), { target: { value: POOL } });
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    fireEvent.change(await screen.findByLabelText(/amount/i), { target: { value: "0.01" } });
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/Protocol fee \(1%\)/i));
+    return (document.body.textContent ?? "").replace(/\s+/g, " ");
+  }
+
+  it("states that the amount shown is the amount the wallet sends", async () => {
+    const text = await review();
+    expect(text).toMatch(/funding amount shown is the token amount your wallet will send/i);
+  });
+
+  it("no longer claims amounts settle at the mining price", async () => {
+    const text = await review();
+    expect(text).not.toMatch(/settle at the price when your transaction is mined/i);
+    expect(text).not.toMatch(/estimated from the current price/i);
+  });
+
+  it("explains that a later price move causes a rejection, not a larger debit", async () => {
+    const text = await review();
+    expect(text).toMatch(/reject the contribution as below the pool minimum/i);
+    expect(text).toMatch(/will not silently increase your token debit/i);
+  });
+
+  it("keeps the fee disclosures intact", async () => {
+    const text = await review();
+    expect(text).toMatch(/not added on top/i);
+    expect(text).toMatch(/re-checked when you press Fund/i);
+    expect(text).toMatch(/can still change before your transaction is mined/i);
+    expect(text).toMatch(/never exceed the contract.s 3% maximum/i);
   });
 });
